@@ -4,6 +4,7 @@
 
 ## 开发快速通道 🚀
 
+* **环境配置**: [开发与部署指南](./docs/开发与部署指南.md) - 详细的环境配置、Git 工作流与部署步骤。
 * **任务看板**: [TODO.md](./TODO.md) - 查看当前开发任务和分工。
 * **开发必读**: [新功能模块开发指南](./docs/功能模块开发指南.md) - **必读！** 包含如何创建新模块的完整流程。
 * **测试指南**: [测试指南](./docs/测试指南.md) - 如何运行和编写测试。
@@ -32,90 +33,6 @@
 
 ---
 
-## 环境配置
-
-要开始项目开发，请按照以下步骤配置本地环境：
-
-1.  **安装 Python**: 确保您的系统中安装了 Python 3.8 或更高版本。建议从 [Python 官方网站](https://www.python.org/downloads/) 下载并安装。
-
-2.  **创建并激活虚拟环境**: 在项目根目录创建并激活独立的 Python 虚拟环境：
-
-    ```bash
-    python3 -m venv .venv
-    ```
-
-    激活虚拟环境：
-
-    *   在 macOS 和 Linux 上：
-
-        ```bash
-        source .venv/bin/activate
-        ```
-
-    *   在 Windows 上：
-
-        ```bash
-        .venv\Scripts\activate
-        ```
-
-    *   使用 Conda：
-
-        如果您倾向于使用 Conda，可以在项目根目录执行以下命令创建环境：
-
-        ```bash
-        conda env create -f environment.yml
-        ```
-
-        然后激活环境：
-
-        ```bash
-        conda activate backend-py312
-        ```
-
-    **注意:** 请根据您的偏好选择 `venv` 或 Conda 方式激活环境，无需同时使用。
-
-3.  **安装项目依赖**: 激活虚拟环境后，安装 `requirements.txt` 中的依赖：
-
-    ```bash
-    pip install -r requirements.txt
-    ```
-
-    如果您新增或修改了项目依赖，请运行以下命令更新 `requirements.txt` 文件：
-
-    ```bash
-    pip freeze > requirements.txt
-    ```
-
-4.  **配置环境变量**: 在项目根目录创建 `.env` 文件，配置数据库连接等信息。请参考 `.env.example` 文件（如果存在）或以下示例：
-
-    ```bash
-    # 示例 .env 文件内容 (请根据实际情况修改)
-    DATABASE_URL=mssql+pyodbc://user:password@host:port/database?driver=ODBC+Driver+17+for+SQL+Server
-    # 其他可能的配置项...
-    ```
-
-完成以上步骤后，您的开发环境已准备就绪。
-
----
-
-## 如何运行项目
-
-完成环境配置后，您可以通过以下步骤启动 FastAPI 后端服务：
-
-1.  **激活虚拟环境**：如果您关闭了终端或新建了终端，请再次激活虚拟环境（参考上一节）。
-
-2.  **运行 FastAPI 应用**：使用 uvicorn 启动应用。假设您的主应用文件是 `app/main.py`。
-
-    ```bash
-    uvicorn app.main:app --reload
-    ```
-
-    *   `app.main:app` 指的是 `app` 目录下的 `main.py` 文件中的名为 `app` 的 FastAPI 实例。
-    *   `--reload` 参数会在代码文件发生变化时自动重启服务器，方便开发。
-
-服务默认会在 `http://127.0.0.1:8000` 启动。您可以在浏览器中访问 `http://127.0.0.1:8000/docs` 查看自动生成的 API 文档（Swagger UI）。
-
----
 
 ## 项目结构
 
