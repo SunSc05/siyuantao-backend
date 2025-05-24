@@ -58,6 +58,22 @@
         .venv\Scripts\activate
         ```
 
+    *   使用 Conda：
+
+        如果您倾向于使用 Conda，可以在项目根目录执行以下命令创建环境：
+
+        ```bash
+        conda env create -f environment.yml
+        ```
+
+        然后激活环境：
+
+        ```bash
+        conda activate backend-py312
+        ```
+
+    **注意:** 请根据您的偏好选择 `venv` 或 Conda 方式激活环境，无需同时使用。
+
 3.  **安装项目依赖**: 激活虚拟环境后，安装 `requirements.txt` 中的依赖：
 
     ```bash
