@@ -516,3 +516,42 @@ BEGIN
     END CATCH
 END;
 GO
+
+-- 新增：删除用户
+DROP PROCEDURE IF EXISTS [sp_DeleteUser];
+GO
+CREATE PROCEDURE [sp_DeleteUser]
+    @userId UNIQUEIDENTIFIER
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        -- SQL语句1 (DELETE)
+        DELETE FROM [User]
+        WHERE UserID = @userId;
+
+        -- 检查是否删除成功
+        IF @@ROWCOUNT = 0
+        BEGIN
+            -- 如果用户不存在，则抛出错误
+            RAISERROR('用户不存在。', 16, 1);
+            IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+            RETURN;
+        END
+
+        COMMIT TRANSACTION; -- 提交事务
+
+        -- SQL语句2: 返回成功信息（或者根据需要返回删除的行数等）
+        SELECT CAST(1 AS BIT) AS Success; -- 返回一个布尔值表示成功
+
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0
+            ROLLBACK TRANSACTION;
+        THROW; -- 重新抛出捕获的错误
+    END CATCH
+END;
+GO

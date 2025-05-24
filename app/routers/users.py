@@ -1,111 +1,292 @@
 # app/routers/users.py
 from fastapi import APIRouter, Depends, status, HTTPException
-from app.schemas.user_schemas import UserCreate, UserResponse, UserLogin, Token, UserUpdate
-from app.dal import users as user_dal # 直接调用 DAL
-# from app.services import user_service # 如果引入了 Service 层
+# from app.schemas.user_schemas import UserCreate, UserResponse, UserLogin, Token, UserUpdate, RequestVerificationEmail, VerifyEmail, UserPasswordUpdate # Import schemas from here
+from app.schemas.user_schemas import (
+    UserResponseSchema, 
+    UserProfileUpdateSchema, 
+    UserPasswordUpdate, # Import necessary schemas
+    UserStatusUpdateSchema, # Added for new admin endpoint
+    UserCreditAdjustmentSchema # Added for new admin endpoint
+)
+# from app.dal import users as user_dal # No longer needed
+# from app.services import user_service # No longer needed (using dependency)
+from app.services.user_service import UserService # Import Service class for type hinting
 from app.dal.connection import get_db_connection
-from app.exceptions import NotFoundError, IntegrityError, DALError
+# from app.exceptions import NotFoundError, IntegrityError, DALError # Import exceptions directly or via dependencies
 import pyodbc
 from uuid import UUID
+# from datetime import timedelta # Not directly needed in router for this logic
 
-router = APIRouter()
+# Import auth dependencies from dependencies.py
+from app.dependencies import (
+    get_current_user, # For authenticated endpoints
+    get_current_active_admin_user, # For admin-only endpoints
+    get_user_service # Dependency for UserService
+)
+from app.exceptions import NotFoundError, IntegrityError, DALError, AuthenticationError, ForbiddenError # Import necessary exceptions
 
-@router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
-async def register_user(
-    user_data: UserCreate,
-    conn: pyodbc.Connection = Depends(get_db_connection)
+router = APIRouter(prefix="/users", tags=["Users"])
+
+# Removed /register and /login as they are in auth.py
+# @router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
+# async def register_user(
+# ... removed ...
+
+# @router.post("/login", response_model=Token)
+# async def login_for_access_token(
+# ... removed ...
+
+@router.get("/me", response_model=UserResponseSchema)
+async def read_users_me(
+    # current_user: dict = Depends(get_current_user) # Requires JWT authentication
+    current_user: dict = Depends(get_current_user), # Use dependency from dependencies.py
+    conn: pyodbc.Connection = Depends(get_db_connection), # Inject DB connection
+    user_service: UserService = Depends(get_user_service) # Inject Service
 ):
     """
-    新用户注册。
+    获取当前登录用户的个人资料。
     """
+    # get_current_user dependency should provide the user ID (e.g., in a dict)
+    user_id = current_user.get('UserID') or current_user.get('user_id') # Adapt based on how get_current_user returns ID
+    if not user_id:
+         # This should not happen if get_current_user works correctly, but as a safeguard
+         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="无法获取当前用户信息")
+    
     try:
-        # 实际应用中：调用密码哈希函数
-        hashed_password = user_data.password # 这里仅作示例，实际需哈希
-        created_user = await user_dal.create_user(conn, user_data.username, user_data.email, hashed_password)
-        # 如果有 user_service 层，可以这样调用：
-        # created_user = await user_service.register_user_service(conn, user_data)
-        return created_user
-    except IntegrityError as e:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+        # Call Service layer function, passing the connection and user_id
+        user_profile = await user_service.get_user_profile_by_id(conn, UUID(str(user_id))) # Ensure user_id is UUID
+        return user_profile
+    except NotFoundError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
     except DALError as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"数据库操作失败: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"服务器内部错误: {e}")
 
-@router.post("/login", response_model=Token)
-async def login_for_access_token(
-    form_data: UserLogin,
-    conn: pyodbc.Connection = Depends(get_db_connection)
+@router.put("/me", response_model=UserResponseSchema)
+async def update_current_user_profile(
+    user_update_data: UserProfileUpdateSchema, # Use the new schema name
+    # current_user: dict = Depends(get_current_user) # Requires JWT authentication
+    current_user: dict = Depends(get_current_user), # Use dependency from dependencies.py
+    conn: pyodbc.Connection = Depends(get_db_connection), # Inject DB connection
+    user_service: UserService = Depends(get_user_service) # Inject Service
 ):
     """
-    用户登录并获取 JWT Token。
+    更新当前登录用户的个人资料 (不包括密码)。
     """
-    user_data = await user_dal.get_user_by_username(conn, form_data.username)
-    if not user_data:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect username or password")
-    # 实际应用中：验证密码
-    if not (form_data.password == user_data['password_hash']): # 示例，实际应 bcrypt.check_password_hash
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect username or password")
+    user_id = current_user.get('UserID') or current_user.get('user_id') # Adapt based on how get_current_user returns ID
+    if not user_id:
+         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="无法获取当前用户信息")
 
-    # 生成 JWT token (需要单独实现，这里简化)
-    access_token = "fake-jwt-token-for-" + user_data['username']
-    return {"access_token": access_token, "token_type": "bearer"}
-
-@router.get("/{user_id}", response_model=UserResponse)
-async def get_user_profile(
-    user_id: UUID, # FastAPI 会自动验证 UUID 格式
-    conn: pyodbc.Connection = Depends(get_db_connection)
-):
-    """
-    根据用户 ID 获取用户个人资料。
-    """
-    user = await user_dal.get_user_by_id(conn, user_id)
-    if not user:
-        # 抛出 NotFoundError，由 app.main.py 中的异常处理器捕获并返回 404
-        raise NotFoundError(f"User with ID {user_id} not found.")
-    return user
-
-@router.put("/{user_id}", response_model=UserResponse)
-async def update_user_profile(
-    user_id: UUID,
-    user_update: UserUpdate,
-    conn: pyodbc.Connection = Depends(get_db_connection)
-):
-    """
-    更新用户个人资料。
-    """
     try:
-        # 仅传递有值更新的字段
-        update_data = user_update.model_dump(exclude_unset=True) # 获取只设置的字段
-        # 如果密码有更新，需要哈希
-        if 'password' in update_data:
-            update_data['hashed_password'] = update_data.pop('password') # hash_password(update_data.pop('password'))
-
-        # 调用 DAL 更新用户，传入 user_id 和具体更新字段
-        updated_user = await user_dal.update_user(
-            conn, user_id,
-            username=update_data.get('username'),
-            email=update_data.get('email'),
-            hashed_password=update_data.get('hashed_password')
-        )
-        return updated_user
+        # Call Service layer function, passing the connection and user_id
+        updated_user = await user_service.update_user_profile(conn, UUID(str(user_id)), user_update_data)
+        return updated_user # Service should return the updated user profile
     except NotFoundError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
     except IntegrityError as e:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
     except DALError as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"数据库操作失败: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"服务器内部错误: {e}")
+
+@router.put("/me/password", status_code=status.HTTP_204_NO_CONTENT)
+async def update_current_user_password(
+    password_update_data: UserPasswordUpdate,
+    # current_user: dict = Depends(get_current_user) # Requires JWT authentication
+    current_user: dict = Depends(get_current_user), # Use dependency from dependencies.py
+    conn: pyodbc.Connection = Depends(get_db_connection), # Inject DB connection
+    user_service: UserService = Depends(get_user_service) # Inject Service
+):
+    """
+    更新当前登录用户的密码。
+    """
+    user_id = current_user.get('UserID') or current_user.get('user_id') # Adapt based on how get_current_user returns ID
+    if not user_id:
+         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="无法获取当前用户信息")
+
+    try:
+        # Call Service layer function, passing the connection and user_id
+        update_success = await user_service.update_user_password(conn, UUID(str(user_id)), password_update_data)
+        # Service.update_user_password should return True on success and raise exception on failure
+        if not update_success:
+             # This case should ideally be covered by exceptions from Service, but as a safeguard
+             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="密码更新失败")
+
+        # Password update successful returns 204 No Content
+        return {}
+    except (NotFoundError, AuthenticationError, DALError) as e:
+         # Catch specific errors from Service
+         raise HTTPException(
+             status_code=status.HTTP_404_NOT_FOUND if isinstance(e, NotFoundError) else 
+                           (status.HTTP_401_UNAUTHORIZED if isinstance(e, AuthenticationError) else status.HTTP_500_INTERNAL_SERVER_ERROR),
+             detail=str(e)
+         )
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"服务器内部错误: {e}")
+
+# Admin endpoints for user management by ID
+
+@router.get("/{user_id}", response_model=UserResponseSchema)
+async def get_user_profile_by_id(
+    user_id: UUID, # FastAPI will validate UUID format
+    conn: pyodbc.Connection = Depends(get_db_connection), # Inject DB connection
+    user_service: UserService = Depends(get_user_service), # Inject Service
+    # current_admin_user: dict = Depends(get_current_active_admin_user) # Requires admin authentication
+    # Note: Authentication check is handled by the dependency itself.
+    current_admin_user: dict = Depends(get_current_active_admin_user)
+):
+    """
+    管理员根据用户 ID 获取用户个人资料。
+    """
+    try:
+        # Call Service layer function, passing the connection
+        user = await user_service.get_user_profile_by_id(conn, user_id)
+        return user
+    except NotFoundError as e:
+        # This exception is raised by the Service layer if user is not found
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except DALError as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"数据库操作失败: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"服务器内部错误: {e}")
+
+@router.put("/{user_id}", response_model=UserResponseSchema)
+async def update_user_profile_by_id(
+    user_id: UUID,
+    user_update_data: UserProfileUpdateSchema, # Use the new schema name
+    conn: pyodbc.Connection = Depends(get_db_connection), # Inject DB connection
+    user_service: UserService = Depends(get_user_service), # Inject Service
+    # current_admin_user: dict = Depends(get_current_active_admin_user) # Requires admin authentication
+    current_admin_user: dict = Depends(get_current_active_admin_user)
+):
+    """
+    管理员根据用户 ID 更新用户个人资料。
+    """
+    try:
+        # Call Service layer function, passing the connection
+        updated_user = await user_service.update_user_profile(conn, user_id, user_update_data)
+        return updated_user
+    except (NotFoundError, IntegrityError, DALError) as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND if isinstance(e, NotFoundError) else 
+                          (status.HTTP_409_CONFLICT if isinstance(e, IntegrityError) else status.HTTP_500_INTERNAL_SERVER_ERROR),
+            detail=str(e)
+        )
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"服务器内部错误: {e}")
 
 @router.delete("/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_user_api(
+async def delete_user_by_id(
     user_id: UUID,
-    conn: pyodbc.Connection = Depends(get_db_connection)
+    conn: pyodbc.Connection = Depends(get_db_connection), # Inject DB connection
+    user_service: UserService = Depends(get_user_service), # Inject Service
+    # current_admin_user: dict = Depends(get_current_active_admin_user) # Requires admin authentication
+    current_admin_user: dict = Depends(get_current_active_admin_user)
 ):
     """
-    删除用户。
+    管理员根据用户 ID 删除用户。
     """
     try:
-        await user_dal.delete_user(conn, user_id)
-        return {} # 204 No Content 返回空响应体
+        # Call Service layer function, passing the connection
+        await user_service.delete_user(conn, user_id)
+        return {} # 204 No Content returns an empty body
     except NotFoundError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
     except DALError as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e)) 
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"服务器内部错误: {e}")
+
+# Removed email verification routes as they are in auth.py
+# @router.post("/request-verification-email", status_code=status.HTTP_200_OK)
+# async def request_verification_email_api(
+# ... removed ...
+
+# @router.post("/verify-email", status_code=status.HTTP_200_OK)
+# async def verify_email_api(
+# ... removed ...
+
+# TODO: Add admin-only endpoints for user management like listing all users, disabling/enabling accounts, etc. 
+
+# Admin endpoint to get all users
+@router.get("/", response_model=list[UserResponseSchema])
+async def get_all_users_api(
+    conn: pyodbc.Connection = Depends(get_db_connection),
+    user_service: UserService = Depends(get_user_service),
+    current_admin_user: dict = Depends(get_current_active_admin_user) # Requires admin authentication
+):
+    """
+    管理员获取所有用户列表。
+    """
+    try:
+        admin_id = current_admin_user.get('UserID') or current_admin_user.get('user_id')
+        if not admin_id:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="无法获取管理员用户信息")
+
+        users = await user_service.get_all_users(conn, UUID(str(admin_id)))
+        return users
+    except (ForbiddenError, DALError) as e:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN if isinstance(e, ForbiddenError) else status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"服务器内部错误: {e}")
+
+# Admin endpoint to change user status
+@router.put("/{user_id}/status", status_code=status.HTTP_204_NO_CONTENT)
+async def change_user_status_by_id(
+    user_id: UUID,
+    status_update_data: UserStatusUpdateSchema, # Use the new schema
+    conn: pyodbc.Connection = Depends(get_db_connection),
+    user_service: UserService = Depends(get_user_service),
+    current_admin_user: dict = Depends(get_current_active_admin_user)
+):
+    """
+    管理员根据用户 ID 更改用户状态（禁用/启用）。
+    """
+    try:
+        admin_id = current_admin_user.get('UserID') or current_admin_user.get('user_id')
+        if not admin_id:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="无法获取管理员用户信息")
+        
+        await user_service.change_user_status(conn, user_id, status_update_data.status, UUID(str(admin_id)))
+        return {} # 204 No Content
+    except (NotFoundError, ForbiddenError, DALError) as e:
+         raise HTTPException(
+             status_code=status.HTTP_404_NOT_FOUND if isinstance(e, NotFoundError) else 
+                           (status.HTTP_403_FORBIDDEN if isinstance(e, ForbiddenError) else status.HTTP_500_INTERNAL_SERVER_ERROR),
+             detail=str(e)
+         )
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"服务器内部错误: {e}")
+
+# Admin endpoint to adjust user credit
+@router.put("/{user_id}/credit", status_code=status.HTTP_204_NO_CONTENT)
+async def adjust_user_credit_by_id(
+    user_id: UUID,
+    credit_adjustment_data: UserCreditAdjustmentSchema, # Use the new schema
+    conn: pyodbc.Connection = Depends(get_db_connection),
+    user_service: UserService = Depends(get_user_service),
+    current_admin_user: dict = Depends(get_current_active_admin_user)
+):
+    """
+    管理员根据用户 ID 调整用户信用分。
+    """
+    try:
+        admin_id = current_admin_user.get('UserID') or current_admin_user.get('user_id')
+        if not admin_id:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="无法获取管理员用户信息")
+            
+        await user_service.adjust_user_credit(conn, user_id, credit_adjustment_data.credit_adjustment, UUID(str(admin_id)), credit_adjustment_data.reason)
+        return {} # 204 No Content
+    except (NotFoundError, ForbiddenError, DALError) as e:
+         raise HTTPException(
+             status_code=status.HTTP_404_NOT_FOUND if isinstance(e, NotFoundError) else 
+                           (status.HTTP_403_FORBIDDEN if isinstance(e, ForbiddenError) else status.HTTP_500_INTERNAL_SERVER_ERROR),
+             detail=str(e)
+         )
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"服务器内部错误: {e}") 

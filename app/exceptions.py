@@ -21,6 +21,18 @@ class IntegrityError(DALError):
 
 # ... 您可以根据业务需求添加更多特定异常，例如 AuthorizationError, ValidationError (for business logic)
 
+class AuthenticationError(Exception):
+    """Raised when authentication fails."""
+    def __init__(self, message="Authentication failed"):
+        self.message = message
+        super().__init__(self.message)
+
+class ForbiddenError(Exception):
+    """Raised when a user is forbidden from accessing a resource or performing an action."""
+    def __init__(self, message="Operation forbidden"):
+        self.message = message
+        super().__init__(self.message)
+
 # FastAPI 异常处理器 - 确保将 DAL 异常转换为标准 HTTP 响应
 async def not_found_exception_handler(request: Request, exc: NotFoundError):
     return JSONResponse(

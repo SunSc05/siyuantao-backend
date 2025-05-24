@@ -8,6 +8,11 @@ class Settings(BaseSettings):
     DATABASE_UID: str
     DATABASE_PWD: str
 
+    # Add JWT settings
+    SECRET_KEY: str
+    ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
+
     model_config = SettingsConfigDict(env_file='.env', extra='ignore')
 
 settings = Settings()

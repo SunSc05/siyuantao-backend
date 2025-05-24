@@ -55,6 +55,12 @@
     pip install -r requirements.txt
     ```
 
+    如果您新增或修改了项目依赖，请运行以下命令更新 `requirements.txt` 文件：
+
+    ```bash
+    pip freeze > requirements.txt
+    ```
+
 4.  **配置环境变量**: 在项目根目录创建 `.env` 文件，配置数据库连接等信息。请参考 `.env.example` 文件（如果存在）或以下示例：
 
     ```bash

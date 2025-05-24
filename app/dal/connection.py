@@ -1,4 +1,6 @@
 # app/dal/connection.py
+from app.exceptions import DALError
+
 import pyodbc
 from app.config import get_connection_string
 import logging
