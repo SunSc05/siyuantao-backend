@@ -11,7 +11,7 @@ from app.routers import users, auth # 暂时只导入已存在的路由
 # from app.routers import products, orders # 这些文件后面会创建
 
 app = FastAPI(
-    title="校园二手交易平台 API",
+    title="[思源淘] 交大校园二手交易平台 API",
     description="基于 FastAPI 和原生 SQL 构建的后端 API",
     version="1.0.0",
     docs_url="/docs",

@@ -136,7 +136,9 @@ CREATE TABLE [ReturnRequest] (
             'InterventionResolved'   -- 管理员介入已解决
         )),
     [AuditIdea] NVARCHAR(500) NULL,                                 -- 卖家或管理员的处理意见/理由，可为空
-    CONSTRAINT FK_ReturnRequest_Order FOREIGN KEY ([OrderID]) REFERENCES [Order]([OrderID]) ON DELETE NO ACTION -- 外键关联订单，如果删除订单存在关联退货请求则操作失败
+    [ProcessorAdminID] UNIQUEIDENTIFIER NULL, -- 处理该退货请求的管理员ID，可为空
+    CONSTRAINT FK_ReturnRequest_Order FOREIGN KEY ([OrderID]) REFERENCES [Order]([OrderID]) ON DELETE NO ACTION,  -- 外键关联订单，如果删除订单存在关联退货请求则操作失败
+    CONSTRAINT FK_ReturnRequest_ProcessorAdmin FOREIGN KEY ([ProcessorAdminID]) REFERENCES [User]([UserID]) --只有具有管理员权限（IsStaff=1）的用户ID才应被写入该字段，应用层需保证。
 );
 GO
 
@@ -148,7 +150,7 @@ CREATE TABLE [UserFavorite] (
     [ProductID] UNIQUEIDENTIFIER NOT NULL,                    -- 被收藏的商品ID，不允许为空
     [FavoriteTime] DATETIME NOT NULL DEFAULT GETDATE(),       -- 收藏时间，不允许为空，默认当前系统时间
     CONSTRAINT FK_UserFavorite_User FOREIGN KEY ([UserID]) REFERENCES [User]([UserID]) ON DELETE CASCADE, -- 外键关联用户，用户删除时收藏记录删除
-    CONSTRAINT FK_UserFavorite_Product FOREIGN KEY ([ProductID]) REFERENCES [Product]([ProductID]) ON DELETE CASCADE, -- 外键关联商品，商品删除时收藏记录删除
+    CONSTRAINT FK_UserFavorite_Product FOREIGN KEY ([ProductID]) REFERENCES [Product]([ProductID]) ON DELETE NO ACTION, -- 外键关联商品，商品删除时如果存在关联收藏记录则操作失败
     CONSTRAINT UQ_UserFavorite_UserProduct UNIQUE ([UserID], [ProductID]) -- 复合唯一约束，确保一个用户不能重复收藏同一个商品
 );
 GO

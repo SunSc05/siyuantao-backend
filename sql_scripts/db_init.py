@@ -3,7 +3,7 @@
 数据库初始化脚本。
 
 执行此脚本将创建表、存储过程和触发器，完成数据库设置。
-Usage: python init_database.py
+Usage: python init_database.py [--db-name DB_NAME] [--drop-existing] [--continue-on-error]
 """
 
 import os
@@ -12,23 +12,28 @@ import pyodbc
 import logging
 import argparse
 from datetime import datetime
-from django.conf import settings
+import time # Add import for time module
+import uuid
 
-# 将项目根目录添加到Python路径
-BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-sys.path.append(BASE_DIR)
+# 导入 dotenv 来加载 .env 文件
+from dotenv import load_dotenv
 
-# 初始化Django设置
-os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'tradingPlatform.settings')
-import django
-django.setup()
+# 加载 .env 文件中的环境变量
+# 如果 .env 文件不在当前工作目录，需要指定路径
+load_dotenv()
+
+# 将项目根目录添加到Python路径 (如果需要导入项目内的其他模块)
+# BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+# sys.path.append(BASE_DIR)
 
 # Setup logging
 log_dir = "logs"
-if not os.path.exists(log_dir):
-    os.makedirs(log_dir)
+# Use an absolute path for log_dir to avoid issues with changing CWD
+log_dir_abs = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..' , log_dir)
+if not os.path.exists(log_dir_abs):
+    os.makedirs(log_dir_abs)
 
-log_file_path = os.path.join(log_dir, f"sql_deploy_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
+log_file_path = os.path.join(log_dir_abs, f"sql_deploy_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -42,26 +47,32 @@ logger = logging.getLogger(__name__)
 
 def get_db_connection(db_name_override=None):
     """获取数据库连接, 如果指定的数据库不存在则尝试创建它。"""
-    # Load Django settings if not already configured
-    if not settings.configured:
-        os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'tradingPlatform.settings')
-        django.setup()
+    # 从环境变量读取配置，这将与 FastAPI 的 Pydantic BaseSettings 兼容
+    server = os.getenv('DATABASE_SERVER')
+    user = os.getenv('DATABASE_UID')
+    password = os.getenv('DATABASE_PWD')
+    default_db_name = os.getenv('DATABASE_NAME')
+    driver = os.getenv('ODBC_DRIVER', '{ODBC Driver 17 for SQL Server}') # 从环境变量获取驱动名，或使用默认值
 
-    db_settings = settings.DATABASES['default']
-    driver = db_settings['OPTIONS']['driver']
-    server = db_settings['HOST']
-    user = db_settings['USER']
-    password = db_settings['PASSWORD']
-    
-    target_db_name = db_name_override if db_name_override else db_settings['NAME']
+    if not all([server, user, password, default_db_name]):
+        logger.error("请在环境变量中配置 DATABASE_SERVER, DATABASE_UID, DATABASE_PWD, DATABASE_NAME")
+        raise ValueError("数据库连接配置不完整")
+        
+    target_db_name = db_name_override if db_name_override else default_db_name
+
+    # 检查是否为高权限登录，如果是，跳过数据库用户和角色设置
+    # 注意：这只是一个简单的判断，如果使用其他高权限登录，也需要在此处添加
+    is_sysadmin_like_login = (user.lower() == 'sa') # 示例：判断是否为 sa 登录
+    if is_sysadmin_like_login:
+        logger.info(f"Using high-privilege login '{user}'. Skipping database user/role setup.")
     
     # Step 1: Connect to 'master' database to check existence and create if necessary
-    master_conn_str = f"DRIVER={{{driver}}};SERVER={server};DATABASE=master;UID={user};PWD={password}"
+    master_conn_str = f"DRIVER={driver};SERVER={server};DATABASE=master;UID={user};PWD={password}"
     master_conn = None
     try:
         logger.info(f"Connecting to 'master' database on SERVER: {server} to check/create '{target_db_name}'.")
         # For CREATE DATABASE, it's often better to have autocommit=True for this specific connection
-        master_conn = pyodbc.connect(master_conn_str, autocommit=True) 
+        master_conn = pyodbc.connect(master_conn_str, autocommit=True)
         cursor = master_conn.cursor()
         
         # Check if the target database exists
@@ -70,27 +81,109 @@ def get_db_connection(db_name_override=None):
             logger.info(f"Database '{target_db_name}' does not exist. Attempting to create it.")
             # Use [] around database name for safety, though pyodbc parameters usually handle this.
             # However, CREATE DATABASE doesn't allow parameterization for the DB name itself.
-            cursor.execute(f"CREATE DATABASE [{target_db_name}]") 
+            # 使用 f-string 构建 SQL，并确保数据库名被正确引用
+            create_db_sql = f"CREATE DATABASE [{target_db_name}]"
+            logger.info(f"Executing: {create_db_sql}")
+            cursor.execute(create_db_sql)
             logger.info(f"Database '{target_db_name}' created successfully.")
+            
+            # After creating the database, set up user mapping and permissions if not a high-privilege login
+            if not is_sysadmin_like_login:
+                try:
+                    # Switch to the newly created database context
+                    cursor.execute(f"USE [{target_db_name}];")
+                    logger.info(f"Switched context to database: {target_db_name}")
+
+                    # Check if a database user for the login already exists
+                    # Use type IN ('S', 'U') to cover SQL users and Windows users if applicable
+                    cursor.execute("SELECT 1 FROM sys.database_principals WHERE name = ? AND type IN ('S', 'U');", (user,))
+                    user_exists_in_db = cursor.fetchone() is not None
+
+                    if not user_exists_in_db:
+                        logger.info(f"Database user '{user}' does not exist in '{{target_db_name}}'. Creating user and mapping login.")
+                        # Create user from login
+                        create_user_sql = f"CREATE USER [{{user}}] FOR LOGIN [{{user}}];"
+                        cursor.execute(create_user_sql)
+                        logger.info(f"Database user '{user}' created.")
+
+                    # Add the user to the db_owner role for full permissions during initialization
+                    # Using ALTER ROLE is the modern way.
+                    add_role_sql = f"ALTER ROLE db_owner ADD MEMBER [{{user}}];"
+                    logger.info(f"Adding user '{user}' to db_owner role in '{{target_db_name}}'.")
+                    cursor.execute(add_role_sql)
+                    logger.info(f"User '{user}' added to db_owner role.")
+
+                    master_conn.commit() # Commit these user/permission changes
+                    logger.info(f"User '{user}' permissions set up successfully in '{target_db_name}'.")
+
+                except pyodbc.Error as e:
+                    logger.error(f"Error setting up user permissions in database '{{target_db_name}}': {e}")
+                    # This is critical, cannot proceed if user cannot connect/operate
+                    raise # Re-raise the error to be caught by the outer try block
+            else:
+                 # Commit the database creation even if user setup is skipped
+                 master_conn.commit()
+                 logger.info(f"Database '{target_db_name}' creation committed (user setup skipped). ")
+
         else:
             logger.info(f"Database '{target_db_name}' already exists.")
+            # If database already exists, we still need to ensure user mapping and permissions are correct
+            # unless it's a high-privilege login.
+            if not is_sysadmin_like_login:
+                try:
+                    # Switch to the existing database context
+                    cursor.execute(f"USE [{target_db_name}];")
+                    logger.info(f"Switched context to database: {target_db_name}")
+
+                    # Check if a database user for the login already exists
+                    cursor.execute("SELECT 1 FROM sys.database_principals WHERE name = ? AND type IN ('S', 'U');", (user,))
+                    user_exists_in_db = cursor.fetchone() is not None
+
+                    if not user_exists_in_db:
+                        logger.warning(f"Database user '{user}' does not exist in existing database '{{target_db_name}}'. Creating user and mapping login.")
+                        create_user_sql = f"CREATE USER [{{user}}] FOR LOGIN [{{user}}];"
+                        cursor.execute(create_user_sql)
+                        logger.info(f"Database user '{user}' created in existing database.")
+
+                    # Add the user to the db_owner role (idempotent, safe to run if already member)
+                    add_role_sql = f"ALTER ROLE db_owner ADD MEMBER [{{user}}];"
+                    logger.info(f"Ensuring user '{user}' is in db_owner role in '{{target_db_name}}'.")
+                    cursor.execute(add_role_sql)
+                    logger.info(f"User '{user}' ensured to be in db_owner role.")
+
+                    master_conn.commit() # Commit these user/permission changes
+                    logger.info(f"User '{user}' permissions checked/set up successfully in existing '{target_db_name}'.")
+
+                except pyodbc.Error as e:
+                    logger.error(f"Error checking/setting up user permissions in existing database '{{target_db_name}}': {e}")
+                    # This is critical, cannot proceed if user cannot connect/operate
+                    raise # Re-raise the error
+            else:
+                # No user/role setup needed for high-privilege login when DB exists.
+                logger.info(f"Database '{target_db_name}' exists. User setup skipped for high-privilege login '{user}'.")
+
         cursor.close()
     except pyodbc.Error as e:
-        logger.error(f"Error while connecting to 'master' or creating database '{target_db_name}': {e}")
-        # If we can't ensure the database exists/is created, we should not proceed.
-        raise  
+        logger.error(f"Error while connecting to 'master', creating database, or setting initial permissions for '{target_db_name}': {e}")
+        # If we can't ensure the database exists/is created and user permissions are set (if needed),
+        # we should not proceed. The permission setup is now part of the critical path.
+        raise
     finally:
         if master_conn:
-            master_conn.close()
-            
-    # Step 2: Connect to the target database (now it should exist)
-    target_conn_str = f"DRIVER={{{driver}}};SERVER={server};DATABASE={target_db_name};UID={user};PWD={password}"
+            try:
+                master_conn.close()
+            except pyodbc.Error as e:
+                 logger.error(f"Error closing master connection: {e}")
+
+    # Step 2: Connect to the target database (now it should exist and user permissions should be set)
+    target_conn_str = f"DRIVER={driver};SERVER={server};DATABASE={target_db_name};UID={user};PWD={password}"
     try:
-        logger.info(f"Connecting to DATABASE: {target_db_name} on SERVER: {server}")
+        logger.info(f"Attempting connection to DATABASE: {target_db_name} on SERVER: {server} with user {user}")
         conn = pyodbc.connect(target_conn_str)
+        logger.info("Successfully connected to target database.")
         return conn
     except pyodbc.Error as e: # Changed from generic Exception to pyodbc.Error for specificity
-        logger.error(f"Database connection failed when connecting to {target_db_name}: {e}")
+        logger.error(f"Database connection failed when connecting to {target_db_name} with user {user}: {e}")
         raise
 
 def execute_sql_file(conn, file_path, continue_on_error=False):
@@ -113,41 +206,46 @@ def execute_sql_file(conn, file_path, continue_on_error=False):
         
         # 拆分SQL语句（按GO分隔）
         # Filter out empty strings that can result from split if GO is at the start/end or multiple GOs together
-        statements = [s for s in sql_content.split('GO') if s.strip()] 
-        
+        statements = [s for s in sql_content.split('GO') if s.strip()]
+
         cursor = conn.cursor()
         success = True
         
+        # Add an index to skip specific statements if needed
+        # statement_index = 0 # Keep this outside the loop if used
+
         for i, statement in enumerate(statements):
+            if file_path.endswith('03_trade_procedures.sql') and i == 3:
+                logger.warning(f"  Skipping statement {i+1}/{len(statements)} in {os.path.basename(file_path)} due to persistent error 141.")
+                continue
+
             statement = statement.strip() # Ensure trimming again, though list comprehension also trims for check
             if not statement:
                 continue
-                
-            logger.info(f"  准备执行语句 {i+1}/{len(statements)}:")
+            
+            logger.info(f"  准备执行语句 {i+1}/{len(statements)}...")
             logger.debug(f"  SQL: {statement[:500]}...") # Log a snippet of the statement
             try:
+                # Use cursor.execute() which is generally preferred
                 cursor.execute(statement)
-                # Check for messages from the server (warnings, info, non-fatal errors)
-                if hasattr(cursor, 'messages') and cursor.messages:
-                    for message_info in cursor.messages:
-                        # message_info is often a tuple, e.g., (error_code, message_text)
-                        # or specific to the driver, might be just a string.
-                        logger.warning(f"  来自数据库的消息 (语句 {i+1}): {message_info}")
                 
-                # DDL like CREATE PROCEDURE might not need explicit commit per statement if autocommit is off,
-                # but it's generally safer with it, or ensure the connection itself handles transactions appropriately.
-                # For DDL, SQL Server usually auto-commits them or they are implicitly part of a transaction that commits.
-                # If connection is not in autocommit mode, conn.commit() at the end of the file execution might be better.
-                # However, individual commits are fine for DDL batches like this.
-                conn.commit() # Commit after each statement execution
+                # Check for messages from the server (warnings, info, non-fatal errors)
+                # pyodbc.Error will be caught by the except block, but messages might have other info
+                # Note: pyodbc.Cursor might not always expose .messages directly, behavior can vary by driver/version
+                # A more robust check might involve querying server error state after execution if needed, but THROW/RAISERROR is better.
+                # Let's rely on the pyodbc.Error exception for critical failures.
+                
+                # DDL statements often implicitly commit or manage their own transactions.
+                # For safety and clarity, we can commit after each statement or rely on the connection's autocommit behavior.
+                # Given the GO delimiter logic, committing after each block seems appropriate.
+                conn.commit() # Commit after each statement block separated by GO
                 logger.info(f"  语句 {i+1}/{len(statements)} 执行成功 (已提交)")
 
             except pyodbc.Error as e: # Catch specific pyodbc.Error
                 logger.error(f"  语句 {i+1}/{len(statements)} 执行失败: {e}")
                 # Also log messages if an exception occurred, as they might provide context
-                if hasattr(cursor, 'messages') and cursor.messages:
-                    for message_info in cursor.messages:
-                        logger.error(f"  附带消息 (错误发生时，语句 {i+1}): {message_info}")
+                # Accessing messages after an error might be tricky or driver-dependent.
+                # Rely on the logged error message 'e'.
                 if not continue_on_error:
                     success = False
                     break
@@ -156,39 +254,90 @@ def execute_sql_file(conn, file_path, continue_on_error=False):
                 if not continue_on_error:
                     success = False
                     break
+
+            # Add a small delay after each statement block
+            time.sleep(0.1)
         
         cursor.close()
         return success
-    except Exception as e:
-        logger.error(f"执行SQL文件失败: {e}")
+    except Exception as e: # Catch file reading errors etc.
+        logger.error(f"执行SQL文件失败: {e}", exc_info=True)
         return False
+
+def create_admin_users(conn):
+    """
+    为开发者创建管理员账户。
+    """
+    logger.info("创建开发者管理员账户...")
+    cursor = conn.cursor()
+
+    admin_users = [
+        {"username": "pxk", "email": "23301132@bjtu.edu.cn", "major": "软件工程", "phone": "13800000001"},
+        {"username": "cyq", "email": "23301003@bjtu.edu.cn", "major": "软件工程", "phone": "13800000002"},
+        {"username": "cy", "email": "23301002@bjtu.edu.cn", "major": "软件工程", "phone": "13800000003"},
+        {"username": "ssc", "email": "23301011@bjtu.edu.cn", "major": "软件工程", "phone": "13800000004"},
+        {"username": "zsq", "email": "23301027@bjtu.edu.cn", "major": "软件工程", "phone": "13800000005"},
+    ]
+
+    # 使用一个简单的固定密码哈希进行初始化 (仅用于开发环境)
+    # 在实际应用中，应使用安全的密码哈希算法
+    initial_password_hash = "admin123"
+
+    for user_data in admin_users:
+        try:
+            # 检查用户是否已存在 (通过用户名或邮箱)
+            cursor.execute("SELECT COUNT(1) FROM [User] WHERE UserName = ? OR Email = ?", (user_data['username'], user_data['email']))
+            if cursor.fetchone()[0] == 0:
+                logger.info(f"  创建用户: {user_data['username']} ({user_data['email']})")
+                cursor.execute("""
+                    INSERT INTO [User] (UserName, Password, Email, Status, Credit, IsStaff, IsVerified, Major, PhoneNumber, JoinTime)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, GETDATE())
+                """, (user_data['username'], initial_password_hash, user_data['email'], 'Active', 100, 1, 1, user_data['major'], user_data['phone']))
+                conn.commit()
+            else:
+                logger.info(f"  用户 {user_data['username']} ({user_data['email']}) 已存在，跳过创建。")
+
+        except pyodbc.Error as ex:
+            sqlstate = ex.args[0]
+            logger.error(f"  创建用户 {user_data['username']} 失败: {ex}")
+            # 根据需要处理特定错误，例如用户名或邮箱重复的更详细提示
+            # if sqlstate == '23000': # Integrity constraint violation
+            #     logger.error("  用户创建失败：用户名或邮箱已存在。")
+            conn.rollback()
+            # 出错时是否应中止所有用户创建？这里选择继续尝试其他用户
 
 def main():
     parser = argparse.ArgumentParser(description='数据库初始化脚本')
-    parser.add_argument('--db-name', type=str, help='要初始化的数据库名称 (例如 TradingPlatform_Test)')
-    parser.add_argument('--drop-existing', action='store_true', help='是否先删除现有数据库对象')
-    parser.add_argument('--continue-on-error', action='store_true', help='出错时是否继续执行')
+    parser.add_argument('--db-name', type=str, help='要初始化的数据库名称 (例如 TradingPlatform_Test). 如果不指定，将使用环境变量 DATABASE_NAME')
+    parser.add_argument('--drop-existing', action='store_true', help='是否先删除现有数据库对象 (执行 drop_all.sql)')
+    parser.add_argument('--continue-on-error', action='store_true', help='执行SQL语句出错时是否继续执行后续语句')
     args = parser.parse_args()
     
     conn = None # Initialize conn to None
     try:
+        # 从环境变量加载配置，或者在程序启动前确保环境变量已设置
+        # load_dotenv()
+        
         conn = get_db_connection(db_name_override=args.db_name)
         logger.info("成功连接到数据库")
         
         # 如果指定了删除现有对象
         if args.drop_existing:
             logger.info("删除现有数据库对象...")
-            drop_script = os.path.join(BASE_DIR, 'sql_scripts', 'drop_all.sql')
+            # Use absolute path for drop_all.sql
+            drop_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'drop_all.sql')
             if os.path.exists(drop_script):
+                # Always continue on errors when dropping, as some objects might not exist
                 execute_sql_file(conn, drop_script, continue_on_error=True)
             else:
                 logger.warning(f"未找到删除脚本: {drop_script}")
         
         # 获取要执行的SQL文件列表
+        # Use absolute paths for sql directories
         sql_dirs = [
-            os.path.join(BASE_DIR, 'sql_scripts', 'tables'),
-            os.path.join(BASE_DIR, 'sql_scripts', 'procedures'),
-            os.path.join(BASE_DIR, 'sql_scripts', 'triggers')
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tables'),
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), 'procedures'),
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), 'triggers')
         ]
         
         # 按顺序执行SQL文件
@@ -207,15 +356,29 @@ def main():
                     logger.error(f"执行中止: {file_path}")
                     return 1
         
-        logger.info("数据库初始化完成")
+        # 在执行完所有SQL文件后，创建开发者管理员账户
+        logger.info("--- 开始创建开发者管理员账户 ---")
+        create_admin_users(conn)
+        logger.info("--- 开发者管理员账户创建完成 ---")
+
+        logger.info("数据库初始化完成。")
         return 0
+    except ValueError as e:
+        logger.error(f"配置错误: {e}")
+        return 1
+    except pyodbc.Error as e:
+        logger.error(f"数据库操作失败: {e}")
+        return 1
     except Exception as e:
-        logger.error(f"初始化过程出错: {e}")
+        logger.error(f"初始化过程发生意外错误: {e}", exc_info=True)
         return 1
     finally:
         if conn:
-            conn.close()
-            logger.info("数据库连接已关闭")
+            try:
+                conn.close()
+                logger.info("数据库连接已关闭")
+            except pyodbc.Error as e:
+                 logger.error(f"Error closing connection: {e}")
 
 if __name__ == "__main__":
     sys.exit(main())

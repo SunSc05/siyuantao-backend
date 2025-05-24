@@ -42,6 +42,8 @@
     *   `[√] DONE:` `CREATE TABLE [User]`: 用户基础信息表，包含 `UserID`, `UserName`, `Password` (哈希), `Email`, `Major`, `IsVerified`, `VerificationToken`, `TokenExpireTime`, `Status`, `Credit`, `IsStaff`, `JoinTime`, `AvatarUrl`, `Bio`, `PhoneNumber` 等字段。
         *   **备注:** 确认所有字段类型、长度和约束符合要求。
         *   **Major 字段备注:** 考虑到表数量限制，Major 字段将在前端进行硬编码下拉列表，数据库层面保留 `NVARCHAR(100)` 类型。
+*   文件: `backend/sql/db_init.py`
+    *   `[√] DONE:` 在数据库初始化脚本中添加为5位开发者自动创建管理员账户的逻辑。
 *   文件: `backend/sql/01_user_procedures.sql`
     *   `[√] DONE:` `sp_GetUserProfileById (@userId)`: 根据用户ID获取用户公开信息，用于展示个人主页等。
     *   `[√] DONE:` `sp_GetUserByUsernameWithPassword (@username)`: 根据用户名获取用户（包含密码哈希），用于登录验证。
@@ -89,6 +91,7 @@
     *   `[ ] TODO:` `sp_IncreaseProductQuantity (@productId, @quantityToIncrease)`: 增加商品库存（用于订单取消或退货）。
 *   文件: `backend/sql/drop_all.sql`
     *   `[ ] TODO:` 添加所有商品模块相关对象的删除语句。
+*   *   `[ ] **重要：删除产品时，在应用层需要先删除 ProductImage 和 UserFavorite 表中关联的记录，因为数据库层将 FK_UserFavorite_Product 的 ON DELETE CASCADE 改为了 ON DELETE NO ACTION 以解决循环引用问题`
 
 ### 1.3 评价模块
 
@@ -144,6 +147,11 @@
     *   `[ ] TODO:` `sp_GetReturnRequestsByUserId (@userId)`: 获取用户的退货请求列表（买家/卖家）。
 *   文件: `backend/sql/drop_all.sql`
     *   `[ ] TODO:` 添加所有消息与退货模块相关对象的删除语句。
+
+- 退货请求（ReturnRequest）支持买家发起、卖家处理、买家申请管理员介入。
+- 管理员介入处理时，需将当前管理员的 UserID 写入 ProcessorAdminID 字段（外键约束，关联 User 表）。
+- 只有管理员（IsStaff=1）才有权限处理介入请求，应用层和存储过程均有权限校验。
+- 相关存储过程：sp_AdminProcessReturnIntervention。 
 
 ### 1.6 通知与举报模块
 
@@ -306,6 +314,7 @@
     *   `[√] DONE:` `change_user_status(...)`: 调用 DAL 更改用户状态（管理员）。
     *   `[√] DONE:` `adjust_user_credit(...)`: 调用 DAL 调整用户信用分（管理员）。
     *   `[√] DONE:` `get_all_users(...)`: 调用 DAL 获取所有用户列表（管理员）。
+    *   `[ ] TODO:` 实现用户注册魔术链接的核心逻辑，包括Token生成、邮件发送和验证流程。
 *   文件: `backend/tests/modules/user/test_user_service.py`
     *   `[√] DONE:` 编写 `UserService` 中所有业务方法的单元测试，使用 Mocking 模拟 `UserDAL` 及其他外部服务。
 
@@ -696,6 +705,7 @@
 *   `[ ] TODO:` 性能优化：数据库索引、缓存机制。
 *   `[ ] TODO:` 安全加固：输入验证、速率限制、XSS/CSRF 防护。
 *   `[ ] TODO:` 错误日志和监控系统集成。
+*   `[ ] TODO:` **考虑将用户注册时的魔术链接发送逻辑放在后端实现，以增强安全性和鲁棒性。**
 
 ---
 

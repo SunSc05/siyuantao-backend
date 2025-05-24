@@ -228,14 +228,14 @@ BEGIN
         COMMIT TRANSACTION; -- 提交事务
 
         -- 返回新创建订单的ID和一些基本信息 (SQL语句5, 面向UI)
-        SELECT
-            @newOrderId AS 新订单ID,
-            @buyerId AS 买家ID,
-            @sellerId AS 卖家ID,
-            @productId AS 商品ID,
-            @quantity AS 购买数量,
-            'PendingSellerConfirmation' AS 订单状态,
-            GETDATE() AS 创建时间;
+        -- SELECT
+        --     @newOrderId AS 新订单ID,
+        --     @buyerId AS 买家ID,
+        --     @sellerId AS 卖家ID,
+        --     @productId AS 商品ID,
+        --     @quantity AS 购买数量,
+        --     'PendingSellerConfirmation' AS 订单状态,
+        --     GETDATE() AS 创建时间;
 
     END TRY
     BEGIN CATCH
@@ -245,216 +245,6 @@ BEGIN
 
         -- 重新抛出原始错误
         THROW;
-    END CATCH
-END;
-GO
-
--- sp_ConfirmOrder: 卖家确认订单
--- 输入: @orderId UNIQUEIDENTIFIER, @sellerId UNIQUEIDENTIFIER
-DROP PROCEDURE IF EXISTS [sp_ConfirmOrder];
-GO
-CREATE PROCEDURE [sp_ConfirmOrder]
-    @orderId UNIQUEIDENTIFIER,
-    @sellerId UNIQUEIDENTIFIER
-AS
-BEGIN
-    SET NOCOUNT ON;
-    SET XACT_ABORT ON; -- 可选，遇到错误自动回滚
-
-    DECLARE @orderSellerId UNIQUEIDENTIFIER;
-    DECLARE @currentStatus NVARCHAR(50);
-    -- DECLARE @buyerId UNIQUEIDENTIFIER; -- 用于通知买家
-
-    BEGIN TRY
-        BEGIN TRANSACTION; -- 开始事务
-
-        -- 1. 检查 @orderId 对应的订单是否存在且为 'PendingSellerConfirmation' 状态，并且 @sellerId 是订单的卖家 (SQL语句1)
-        SELECT @orderSellerId = SellerID, @currentStatus = Status -- , @buyerId = BuyerID -- 获取买家ID
-        FROM [Order]
-        WHERE OrderID = @orderId;
-
-        IF @orderSellerId IS NULL
-        BEGIN
-            RAISERROR('订单不存在。', 16, 1);
-            IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION; RETURN;
-        END
-
-        IF @orderSellerId != @sellerId
-        BEGIN
-            RAISERROR('无权确认此订单，您不是该订单的卖家。', 16, 1);
-            IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION; RETURN;
-        END
-
-        IF @currentStatus != 'PendingSellerConfirmation'
-        BEGIN
-            RAISERROR('订单当前状态 (%s) 不允许确认。', 16, 1, @currentStatus);
-            IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION; RETURN;
-        END
-
-        -- 3. UPDATE [Order] SET Status = 'ConfirmedBySeller' WHERE OrderID = @orderId; (SQL语句2)
-        UPDATE [Order]
-        SET Status = 'ConfirmedBySeller'
-        WHERE OrderID = @orderId;
-
-        -- 4. 通知买家订单已确认 (通常在应用层处理)
-        -- INSERT INTO [SystemNotification] (...) VALUES (...); -- 示例
-
-        COMMIT TRANSACTION; -- 提交事务
-
-        -- 返回成功消息（可选）(SQL语句3)
-        SELECT @orderId AS ConfirmedOrderID, '订单确认成功' AS Result;
-
-    END TRY
-    BEGIN CATCH
-        IF @@TRANCOUNT > 0
-            ROLLBACK TRANSACTION;
-
-        THROW; -- 重新抛出捕获的错误
-    END CATCH
-END;
-GO
-
--- sp_RejectOrder: 卖家拒绝订单
--- 输入: @orderId UNIQUEIDENTIFIER, @sellerId UNIQUEIDENTIFIER, @reason NVARCHAR(500)
-DROP PROCEDURE IF EXISTS [sp_RejectOrder];
-GO
-CREATE PROCEDURE [sp_RejectOrder]
-    @orderId UNIQUEIDENTIFIER,
-    @sellerId UNIQUEIDENTIFIER,
-    @reason NVARCHAR(500) = NULL
-AS
-BEGIN
-    SET NOCOUNT ON;
-    SET XACT_ABORT ON; -- 可选，遇到错误自动回滚
-
-    DECLARE @orderSellerId UNIQUEIDENTIFIER;
-    DECLARE @currentStatus NVARCHAR(50);
-    -- DECLARE @productId UNIQUEIDENTIFIER; -- 库存恢复由触发器处理
-    -- DECLARE @quantity INT; -- 库存恢复由触发器处理
-    -- DECLARE @buyerId UNIQUEIDENTIFIER; -- 用于通知买家，可在应用层查
-
-    BEGIN TRY
-        BEGIN TRANSACTION; -- 开始事务
-
-        -- 1. 检查 @orderId 对应的订单是否存在且为 'PendingSellerConfirmation' 状态，并且 @sellerId 是订单的卖家 (SQL语句1)
-        SELECT @orderSellerId = SellerID, @currentStatus = Status
-        FROM [Order]
-        WHERE OrderID = @orderId;
-
-        IF @orderSellerId IS NULL
-        BEGIN
-            RAISERROR('订单不存在。', 16, 1);
-            IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION; RETURN;
-        END
-
-        IF @orderSellerId != @sellerId
-        BEGIN
-            RAISERROR('无权拒绝此订单，您不是该订单的卖家。', 16, 1);
-            IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION; RETURN;
-        END
-
-        IF @currentStatus != 'PendingSellerConfirmation'
-        BEGIN
-            RAISERROR('订单当前状态 (%s) 不允许拒绝。', 16, 1, @currentStatus);
-            IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION; RETURN;
-        END
-
-        -- 拒绝订单必须提供原因 (控制流 IF)
-        IF @reason IS NULL OR LTRIM(RTRIM(@reason)) = ''
-        BEGIN
-            RAISERROR('拒绝订单必须提供原因。', 16, 1);
-            IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION; RETURN;
-        END
-
-        -- 3. UPDATE [Order] SET Status = 'Cancelled', CancelReason = @reason, CancelTime = GETDATE() (SQL语句2)
-        UPDATE [Order]
-        SET
-            Status = 'Cancelled',
-            CancelReason = @reason,
-            CancelTime = GETDATE()
-        WHERE OrderID = @orderId;
-
-        -- 5. 恢复商品库存 (由 tr_Order_AfterCancel_RestoreQuantity 触发器处理)
-
-        -- 6. 通知买家订单被拒绝 (通常在应用层处理，需要查询买家ID)
-        -- INSERT INTO [SystemNotification] (...) VALUES (...); -- 示例
-
-        COMMIT TRANSACTION; -- 提交事务
-
-        -- 返回成功消息（可选）(SQL语句3)
-        SELECT @orderId AS RejectedOrderID, '订单拒绝成功' AS Result;
-
-    END TRY
-    BEGIN CATCH
-        IF @@TRANCOUNT > 0
-            ROLLBACK TRANSACTION;
-
-        THROW; -- 重新抛出捕获的错误
-    END CATCH
-END;
-GO
-
--- sp_CompleteOrder: 买家确认收货，完成订单
--- 输入: @orderId UNIQUEIDENTIFIER, @buyerId UNIQUEIDENTIFIER
-DROP PROCEDURE IF EXISTS [sp_CompleteOrder];
-GO
-CREATE PROCEDURE [sp_CompleteOrder]
-    @orderId UNIQUEIDENTIFIER,
-    @buyerId UNIQUEIDENTIFIER
-AS
-BEGIN
-    SET NOCOUNT ON;
-    SET XACT_ABORT ON; -- 遇到错误自动回滚
-
-    DECLARE @orderBuyerId UNIQUEIDENTIFIER;
-    DECLARE @currentStatus NVARCHAR(50);
-
-    BEGIN TRY
-        BEGIN TRANSACTION; -- 开始事务
-
-        -- 1. 检查 @orderId 对应的订单是否存在且为 'ConfirmedBySeller' 状态，并且 @buyerId 是订单的买家 (SQL语句1)
-        SELECT @orderBuyerId = BuyerID, @currentStatus = Status
-        FROM [Order]
-        WHERE OrderID = @orderId;
-
-        IF @orderBuyerId IS NULL
-        BEGIN
-            RAISERROR('订单不存在。', 16, 1);
-            IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION; RETURN;
-        END
-
-        IF @orderBuyerId != @buyerId
-        BEGIN
-            RAISERROR('无权确认此订单，您不是该订单的买家。', 16, 1);
-            IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION; RETURN;
-        END
-
-        IF @currentStatus != 'ConfirmedBySeller'
-        BEGIN
-            RAISERROR('订单当前状态 (%s) 不允许确认收货。', 16, 1, @currentStatus);
-            IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION; RETURN;
-        END
-
-        -- 3. UPDATE [Order] SET Status = 'Completed', CompleteTime = GETDATE() (SQL语句2)
-        UPDATE [Order]
-        SET
-            Status = 'Completed',
-            CompleteTime = GETDATE()
-        WHERE OrderID = @orderId;
-
-        -- 触发对卖家的信用分调整（由 tr_Order_AfterComplete_UpdateSellerCredit 触发器处理）
-
-        COMMIT TRANSACTION; -- 提交事务
-
-        -- 返回成功消息（可选）(SQL语句3)
-        SELECT @orderId AS CompletedOrderID, '订单完成确认成功' AS Result;
-
-    END TRY
-    BEGIN CATCH
-        IF @@TRANCOUNT > 0
-            ROLLBACK TRANSACTION;
-
-        THROW; -- 重新抛出捕获的错误
     END CATCH
 END;
 GO
@@ -847,8 +637,8 @@ BEGIN
         -- 根据最终状态执行后续操作
         IF @finalStatus = 'ReturnAccepted'
         BEGIN
-             -- 管理员同意退货：恢复库存，通知买卖双方，可能调整信用分
-             -- 恢复商品库存 (SQL语句5, 6)
+             -- 管理员同意退货：恢复库存，通知买卖双方，调整信用分
+             -- 恢复商品库存
              UPDATE [Product]
              SET Quantity = Quantity + @quantity
              WHERE ProductID = @productId;
@@ -857,31 +647,119 @@ BEGIN
              SET Status = 'Active'
              WHERE ProductID = @productId AND Status = 'Sold';
 
-             -- TODO: 通知买卖双方退货已同意 (在应用层处理)
-             -- DECLARE @notificationTitleAgree NVARCHAR(200) = '退货请求管理员处理结果';
-             -- DECLARE @notificationContentAgree NVARCHAR(MAX) = '订单 (' + CAST(@orderId AS NVARCHAR(36)) + ') 的退货请求，管理员介入后已同意。原因: ' + @adminResult;
-             -- INSERT INTO [SystemNotification] (NotificationID, UserID, Title, Content, CreateTime, IsRead) VALUES (NEWID(), @buyerId, @notificationTitleAgree, @notificationContentAgree, GETDATE(), 0);
-             -- INSERT INTO [SystemNotification] (NotificationID, UserID, Title, Content, CreateTime, IsRead) VALUES (NEWID(), @sellerId, @notificationTitleAgree, @notificationContentAgree, GETDATE(), 0);
+             -- 通知买卖双方退货已同意
+             DECLARE @notificationTitleAgree NVARCHAR(200) = '退货请求管理员处理结果';
+             DECLARE @notificationContentAgree NVARCHAR(MAX) = '订单 (' + CAST(@orderId AS NVARCHAR(36)) + ') 的退货请求，管理员介入后已同意。原因: ' + @adminResult;
+             
+             INSERT INTO [SystemNotification] (
+                 NotificationID,
+                 UserID,
+                 Title,
+                 Content,
+                 CreateTime,
+                 IsRead
+             )
+             VALUES (
+                 NEWID(),
+                 @buyerId,
+                 @notificationTitleAgree,
+                 @notificationContentAgree,
+                 GETDATE(),
+                 0
+             );
 
+             INSERT INTO [SystemNotification] (
+                 NotificationID,
+                 UserID,
+                 Title,
+                 Content,
+                 CreateTime,
+                 IsRead
+             )
+             VALUES (
+                 NEWID(),
+                 @sellerId,
+                 @notificationTitleAgree,
+                 @notificationContentAgree,
+                 GETDATE(),
+                 0
+             );
 
-             -- TODO: 信用分调整（如果同意退货需要扣卖家信用分或给买家加分）
-             -- EXEC [sp_AdjustUserCredit] @userId = @sellerId, @creditAdjustment = -5, @adminId = @adminId, @reason = '管理员介入退货，判定卖家责任，扣除信用分。'; -- 示例：扣除卖家信用分
-             -- EXEC [sp_AdjustUserCredit] @userId = @buyerId, @creditAdjustment = 2, @adminId = @adminId, @reason = '管理员介入退货，判定买家有理，增加信用分。'; -- 示例：给买家增加信用分
+             -- 信用分调整
+             EXEC [sp_AdjustUserCredit] 
+                 @userId = @sellerId, 
+                 @creditAdjustment = -5, 
+                 @adminId = @adminId, 
+                 @reason = '管理员介入退货，判定卖家责任，扣除信用分。';
 
+             EXEC [sp_AdjustUserCredit] 
+                 @userId = @buyerId, 
+                 @creditAdjustment = 2, 
+                 @adminId = @adminId, 
+                 @reason = '管理员介入退货，判定买家有理，增加信用分。';
+
+             -- 更新订单状态
+             UPDATE [Order] 
+             SET Status = 'ReturnAccepted' 
+             WHERE OrderID = @orderId;
         END
         ELSE -- @finalStatus = 'ReturnRejected'
         BEGIN
-             -- 管理员拒绝退货：通知买卖双方，可能调整信用分
-              -- TODO: 通知买卖双方退货已拒绝 (在应用层处理)
-             -- DECLARE @notificationTitleReject NVARCHAR(200) = '退货请求管理员处理结果';
-             -- DECLARE @notificationContentReject NVARCHAR(MAX) = '订单 (' + CAST(@orderId AS NVARCHAR(36)) + ') 的退货请求，管理员介入后已拒绝。原因: ' + @adminResult;
-             -- INSERT INTO [SystemNotification] (NotificationID, UserID, Title, Content, CreateTime, IsRead) VALUES (NEWID(), @buyerId, @notificationTitleReject, @notificationContentReject, GETDATE(), 0);
-             -- INSERT INTO [SystemNotification] (NotificationID, UserID, Title, Content, CreateTime, IsRead) VALUES (NEWID(), @sellerId, @notificationTitleReject, @notificationContentReject, GETDATE(), 0);
+             -- 管理员拒绝退货：通知买卖双方，调整信用分
+             DECLARE @notificationTitleReject NVARCHAR(200) = '退货请求管理员处理结果';
+             DECLARE @notificationContentReject NVARCHAR(MAX) = '订单 (' + CAST(@orderId AS NVARCHAR(36)) + ') 的退货请求，管理员介入后已拒绝。原因: ' + @adminResult;
+             
+             INSERT INTO [SystemNotification] (
+                 NotificationID,
+                 UserID,
+                 Title,
+                 Content,
+                 CreateTime,
+                 IsRead
+             )
+             VALUES (
+                 NEWID(),
+                 @buyerId,
+                 @notificationTitleReject,
+                 @notificationContentReject,
+                 GETDATE(),
+                 0
+             );
 
+             INSERT INTO [SystemNotification] (
+                 NotificationID,
+                 UserID,
+                 Title,
+                 Content,
+                 CreateTime,
+                 IsRead
+             )
+             VALUES (
+                 NEWID(),
+                 @sellerId,
+                 @notificationTitleReject,
+                 @notificationContentReject,
+                 GETDATE(),
+                 0
+             );
 
-             -- TODO: 信用分调整（如果拒绝退货需要扣买家信用分或给卖家加分）
-             -- EXEC [sp_AdjustUserCredit] @userId = @buyerId, @creditAdjustment = -5, @adminId = @adminId, @reason = '管理员介入退货，判定买家无理，扣除信用分。'; -- 示例：扣除买家信用分
-             -- EXEC [sp_AdjustUserCredit] @userId = @sellerId, @creditAdjustment = 2, @adminId = @adminId, @reason = '管理员介入退货，判定卖家无责，增加信用分。'; -- 示例：给卖家增加信用分
+             -- 信用分调整
+             EXEC [sp_AdjustUserCredit] 
+                 @userId = @buyerId, 
+                 @creditAdjustment = -5, 
+                 @adminId = @adminId, 
+                 @reason = '管理员介入退货，判定买家无理，扣除信用分。';
+
+             EXEC [sp_AdjustUserCredit] 
+                 @userId = @sellerId, 
+                 @creditAdjustment = 2, 
+                 @adminId = @adminId, 
+                 @reason = '管理员介入退货，判定卖家无责，增加信用分。';
+
+             -- 更新订单状态
+             UPDATE [Order] 
+             SET Status = 'ReturnRejected' 
+             WHERE OrderID = @orderId;
         END
 
          -- TODO: 更新订单状态为 InterventionResolved 或最终的完成/取消状态
@@ -893,6 +771,92 @@ BEGIN
         -- 返回处理结果 (SQL语句7)
         SELECT @returnRequestId AS ProcessedInterventionReturnRequestID, AuditStatus AS FinalStatus, AuditIdea AS AdminResult
         FROM [ReturnRequest] WHERE ReturnRequestID = @returnRequestId;
+
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0
+            ROLLBACK TRANSACTION;
+
+        THROW; -- 重新抛出捕获的错误
+    END CATCH
+END;
+GO
+
+-- sp_ConfirmOrder: 卖家确认订单
+-- 输入: @orderId UNIQUEIDENTIFIER, @sellerId UNIQUEIDENTIFIER
+DROP PROCEDURE IF EXISTS [sp_ConfirmOrder];
+GO
+CREATE PROCEDURE [sp_ConfirmOrder]
+    @orderId UNIQUEIDENTIFIER,
+    @sellerId UNIQUEIDENTIFIER
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON; -- 可选，遇到错误自动回滚
+
+    DECLARE @orderSellerId UNIQUEIDENTIFIER;
+    DECLARE @currentStatus NVARCHAR(50);
+    -- DECLARE @buyerId UNIQUEIDENTIFIER; -- 用于通知买家
+
+    BEGIN TRY
+        BEGIN TRANSACTION; -- 开始事务
+
+        -- 1. 检查 @orderId 对应的订单是否存在且为 'PendingSellerConfirmation' 状态，并且 @sellerId 是订单的卖家 (SQL语句1)
+        SELECT @orderSellerId = SellerID, @currentStatus = Status
+        FROM [Order]
+        WHERE OrderID = @orderId;
+
+        IF @orderSellerId IS NULL
+        BEGIN
+            RAISERROR('订单不存在。', 16, 1);
+            ROLLBACK TRANSACTION;
+            RETURN;
+        END
+
+        IF @orderSellerId != @sellerId
+        BEGIN
+            RAISERROR('无权确认此订单，您不是该订单的卖家。', 16, 1);
+            ROLLBACK TRANSACTION;
+            RETURN;
+        END
+
+        IF @currentStatus != 'PendingSellerConfirmation'
+        BEGIN
+            RAISERROR('订单当前状态 (%s) 不允许确认。', 16, 1, @currentStatus);
+            ROLLBACK TRANSACTION;
+            RETURN;
+        END
+
+        -- 3. 更新订单状态
+        UPDATE [Order]
+        SET Status = 'ConfirmedBySeller'
+        WHERE OrderID = @orderId;
+
+        -- 4. 通知买家订单已确认
+        DECLARE @buyerId UNIQUEIDENTIFIER;
+        SELECT @buyerId = BuyerID FROM [Order] WHERE OrderID = @orderId;
+        
+        INSERT INTO [SystemNotification] (
+            NotificationID,
+            UserID,
+            Title,
+            Content,
+            CreateTime,
+            IsRead
+        )
+        VALUES (
+            NEWID(),
+            @buyerId,
+            '订单已确认',
+            '您的订单 ' + CAST(@orderId AS NVARCHAR(36)) + ' 已被卖家确认。',
+            GETDATE(),
+            0
+        );
+
+        COMMIT TRANSACTION;
+
+        -- 返回成功消息
+        SELECT @orderId AS ConfirmedOrderID, '订单确认成功' AS Result;
 
     END TRY
     BEGIN CATCH

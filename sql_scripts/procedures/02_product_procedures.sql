@@ -432,7 +432,7 @@ DROP PROCEDURE IF EXISTS [sp_ReviewProduct];
 GO
 CREATE PROCEDURE [sp_ReviewProduct]
     @productId UNIQUEIDENTIFIER,
-    @adminId UNIQUEIDENTIER,
+    @adminId UNIQUEIDENTIFIER,
     @newStatus NVARCHAR(20), -- 'Active' 或 'Rejected'
     @reason NVARCHAR(500) = NULL -- 如果拒绝，提供原因
 AS
