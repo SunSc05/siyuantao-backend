@@ -39,6 +39,7 @@ app.add_exception_handler(DALError, dal_exception_handler)
 # 对于未捕获的 HTTPException (例如 Pydantic 验证失败)
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request, exc: HTTPException):
+    logger.error(f"HTTPException caught by global handler: Status {exc.status_code}, Detail: {exc.detail}, Headers: {exc.headers}")
     return JSONResponse(
         status_code=exc.status_code,
         content={"detail": exc.detail},

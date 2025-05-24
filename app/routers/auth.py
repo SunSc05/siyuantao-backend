@@ -5,7 +5,7 @@ from uuid import UUID
 
 from app.schemas.user_schemas import (
     UserRegisterSchema,
-    UserLoginSchema,
+    UserLoginSchema, # Keep for schema definition reference if needed elsewhere, but not for login input
     UserResponseSchema,
     Token,
     VerifyEmail,
@@ -16,6 +16,8 @@ from app.services.user_service import UserService
 from app.dal.connection import get_db_connection # Import the DB connection dependency
 from app.dependencies import get_user_service # Import the Service dependency
 from app.exceptions import AuthenticationError, ForbiddenError, IntegrityError, DALError # Import exceptions
+
+from fastapi.security import OAuth2PasswordRequestForm # Import OAuth2PasswordRequestForm
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
@@ -44,7 +46,7 @@ async def register(
 
 @router.post("/login", response_model=Token)
 async def login(
-    login_data: UserLoginSchema,
+    form_data: OAuth2PasswordRequestForm = Depends(), # Use OAuth2PasswordRequestForm for form data
     conn: pyodbc.Connection = Depends(get_db_connection), # Inject DB connection
     user_service: UserService = Depends(get_user_service) # Inject Service
 ):
@@ -54,7 +56,7 @@ async def login(
     try:
         # Call Service layer function, passing the connection
         # Service returns the access token string
-        access_token_string = await user_service.authenticate_user_and_create_token(conn, login_data.username, login_data.password)
+        access_token_string = await user_service.authenticate_user_and_create_token(conn, form_data.username, form_data.password)
         
         # If authentication fails, service.authenticate_user_and_create_token should ideally raise an exception
         # If it returns None or similar on failure, handle that case
@@ -72,7 +74,7 @@ async def login(
          raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED if isinstance(e, AuthenticationError) else status.HTTP_403_FORBIDDEN,
             detail=str(e),
-            headers={"WWW-Authenticate": "Bearer"} if isinstance(e, AuthenticationError) else None,
+            headers={"WWW-Authenticate": "Bearer"} if isinstance(e, AuthenticationError) else None
         )
     except DALError as e:
         # Catch DAL errors
@@ -105,6 +107,8 @@ async def request_verification_email_api(
              raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"请求验证邮件失败: {e}")
         # Handle other potential DAL errors as 500 or another appropriate status
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"数据库操作失败: {e}")
+    except (AuthenticationError, ForbiddenError) as e:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED if isinstance(e, AuthenticationError) else status.HTTP_403_FORBIDDEN, detail=str(e))
     except Exception as e:
         # Catch other unexpected errors
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"服务器内部错误: {e}")
@@ -141,6 +145,8 @@ async def verify_email_api(
              raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"邮箱验证失败: {e}")
         # Handle other potential DAL errors as 500 or another appropriate status
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"数据库操作失败: {e}")
+    except (AuthenticationError, ForbiddenError) as e:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED if isinstance(e, AuthenticationError) else status.HTTP_403_FORBIDDEN, detail=str(e))
     except Exception as e:
         # Catch other unexpected errors
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"服务器内部错误: {e}")

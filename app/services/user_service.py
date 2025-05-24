@@ -4,11 +4,12 @@ from uuid import UUID
 from typing import Optional
 
 from app.dal.user_dal import UserDAL # Import the UserDAL class
-from app.schemas.user_schemas import UserRegisterSchema, UserLoginSchema, UserProfileUpdateSchema, UserPasswordUpdate # Import necessary schemas
+from app.schemas.user_schemas import UserRegisterSchema, UserLoginSchema, UserProfileUpdateSchema, UserPasswordUpdate, UserStatusUpdateSchema, UserCreditAdjustmentSchema, UserResponseSchema # Import necessary schemas
 from app.utils.auth import get_password_hash, verify_password, create_access_token # Importing auth utilities
 from app.exceptions import NotFoundError, IntegrityError, DALError, AuthenticationError, ForbiddenError # Import necessary exceptions
 from datetime import timedelta # Needed for token expiry
 from app.config import settings # Import settings object
+from datetime import datetime # Import datetime for data conversion
 
 # Removed direct instantiation of DAL
 # user_dal = UserDAL()
@@ -18,7 +19,7 @@ class UserService:
     def __init__(self, user_dal: UserDAL):
         self.user_dal = user_dal
 
-    async def create_user(self, conn: pyodbc.Connection, user_data: UserRegisterSchema) -> dict:
+    async def create_user(self, conn: pyodbc.Connection, user_data: UserRegisterSchema) -> UserResponseSchema:
         """
         Service layer function to handle user registration.
         Includes password hashing and calling DAL.
@@ -47,7 +48,8 @@ class UserService:
             #     # send_verification_email(user_data.email, verification_token)
             #     print(f"DEBUG: Verification link requested for {user_data.email}") # Debug print
 
-            return created_user # DAL returns the created user dict
+            # Convert DAL response keys to match UserResponseSchema
+            return self._convert_dal_user_to_schema(created_user) # Return the converted dict
 
         except IntegrityError as e:
             # Re-raise IntegrityError to be caught by the Router/Exception Handler
@@ -107,28 +109,26 @@ class UserService:
         )
         return access_token # Return the token string
 
-    async def get_user_profile_by_id(self, conn: pyodbc.Connection, user_id: UUID) -> dict:
+    async def get_user_profile_by_id(self, conn: pyodbc.Connection, user_id: UUID) -> UserResponseSchema:
         """
         Service layer function to get user profile by ID.
         Handles NotFoundError from DAL.
         """
+        print(f"DEBUG Service: get_user_profile_by_id received user_id: {user_id} (type: {type(user_id)})") # Debug print
         # Pass the connection to the DAL method
         user = await self.user_dal.get_user_by_id(conn, user_id)
         if not user:
             raise NotFoundError(f"User with ID {user_id} not found.")
         
-        # Convert UUID fields to string for JSON serialization
-        if '用户ID' in user:
-            user['用户ID'] = str(user['用户ID'])
-        # Add similar checks for other potential UUID fields if they exist in DAL return
+        # Convert DAL response keys to match UserResponseSchema
+        return self._convert_dal_user_to_schema(user) # Return the converted dict
 
-        return user
-
-    async def update_user_profile(self, conn: pyodbc.Connection, user_id: UUID, user_update_data: UserProfileUpdateSchema) -> dict:
+    async def update_user_profile(self, conn: pyodbc.Connection, user_id: UUID, user_update_data: UserProfileUpdateSchema) -> UserResponseSchema:
         """
         Service layer function to update user profile.
         Extracts updated fields and calls DAL.
         """
+        print(f"DEBUG Service: update_user_profile received user_id: {user_id} (type: {type(user_id)})") # Debug print
         # Extract only the fields that are set in the UserProfileUpdateSchema
         update_data = user_update_data.model_dump(exclude_unset=True)
 
@@ -155,9 +155,11 @@ class UserService:
             if not updated_user:
                  # This indicates an unexpected issue in DAL or SP - fallback to re-fetch
                  logger.warning(f"DAL.update_user_profile returned None unexpectedly for user {user_id}")
-                 return await self.get_user_profile_by_id(conn, user_id) # Re-fetch to be sure
+                 # Re-fetch and convert before returning
+                 return self._convert_dal_user_to_schema(await self.user_dal.get_user_by_id(conn, user_id)) # Re-fetch to be sure
 
-            return updated_user
+            # Convert DAL response keys to match UserResponseSchema
+            return self._convert_dal_user_to_schema(updated_user)
 
         except (NotFoundError, IntegrityError, DALError) as e:
             raise e # Re-raise specific exceptions from DAL
@@ -170,6 +172,7 @@ class UserService:
         Service layer function to update user password.
         Verifies old password and calls DAL.
         """
+        print(f"DEBUG Service: update_user_password received user_id: {user_id} (type: {type(user_id)})") # Debug print
         # 1. Get user with password hash to verify old password
         # Use the DAL method that gets user data including the password hash by UserID
         # Need to implement get_user_by_id_with_password in DAL if not exists
@@ -228,6 +231,7 @@ class UserService:
         Service layer function to delete a user by ID.
         Handles NotFoundError from DAL.
         """
+        print(f"DEBUG Service: delete_user received user_id: {user_id} (type: {type(user_id)})") # Debug print
         try:
             # Pass the connection to the DAL method
             delete_success = await self.user_dal.delete_user(conn, user_id)
@@ -262,7 +266,8 @@ class UserService:
              # send_email(linkage_result.get('email', email), linkage_result.get('VerificationToken'))
              print(f"DEBUG: Email verification link requested for {email}.")
 
-             return linkage_result # Return the result including token, user_id, is_new_user
+             # Return the result including token, user_id, is_new_user (no schema conversion needed for this endpoint response)
+             return linkage_result 
 
          except DALError as e:
              # DALError from request_verification_link indicates SP-level business rule violation (like disabled account)
@@ -318,27 +323,146 @@ class UserService:
 
     # New Service methods for admin user management
     async def change_user_status(self, conn: pyodbc.Connection, user_id: UUID, new_status: str, admin_id: UUID) -> bool:
-        """Service layer function for admin to change user status."""
-        # DAL is expected to handle admin permissions, user existence, and status validation
-        return await self.user_dal.change_user_status(conn, user_id, new_status, admin_id)
+        """管理员禁用/启用用户账户。"""
+        print(f"DEBUG Service: change_user_status received user_id: {user_id} (type: {type(user_id)}), admin_id: {admin_id} (type: {type(admin_id)})") # Debug print
+        sql = "{CALL sp_ChangeUserStatus(?, ?, ?)}"
+        try:
+            # Use the injected execute_query function
+            # sp_ChangeUserStatus returns a success message or raises errors
+            result = await self.user_dal.change_user_status(conn, user_id, new_status, admin_id) # Call the DAL method
+
+            # DAL.change_user_status is expected to raise NotFoundError, ForbiddenError, or DALError on failure
+            # It returns True on success.
+            if not result:
+                 # This case should ideally be covered by exceptions from DAL, but as a safeguard
+                 raise DALError("用户状态更改失败：数据库操作未能完成或用户不存在/无权限(意外)。") # Unexpected DAL failure
+
+            return True # Status change successful
+
+        except (NotFoundError, ForbiddenError, DALError) as e:
+            # Catch specific exceptions from DAL and potentially re-raise or convert
+            # For specific DAL errors related to invalid status, re-raise as ValueError or similar
+            if isinstance(e, DALError) and "无效的用户状态" in str(e):
+                raise ValueError(str(e)) from e # Convert specific DALError to ValueError
+            raise e # Re-raise NotFoundError, ForbiddenError, or other DALError
+        except Exception as e:
+            print(f"ERROR: Unexpected error in change_user_status service for user {user_id}, admin {admin_id}: {e}")
+            raise e # Re-raise other unexpected errors
 
     async def adjust_user_credit(self, conn: pyodbc.Connection, user_id: UUID, credit_adjustment: int, admin_id: UUID, reason: str) -> bool:
-        """Service layer function for admin to adjust user credit."""
-        # DAL is expected to handle admin permissions, user existence, and reason requirement
-        return await self.user_dal.adjust_user_credit(conn, user_id, credit_adjustment, admin_id, reason)
+        """
+        管理员手动调整用户信用分。
+        """
+        print(f"DEBUG Service: adjust_user_credit received user_id: {user_id} (type: {type(user_id)}), admin_id: {admin_id} (type: {type(admin_id)})") # Debug print
+        # Business logic validation (e.g., credit bounds) could go here if not handled by DAL/SP
+        # if not 0 <= (current_credit + credit_adjustment) <= 100:
+        #     raise ValueError("信用分调整超出允许范围 (0-100).") # Example validation
 
-    async def get_all_users(self, conn: pyodbc.Connection, admin_id: UUID) -> list[dict]:
+        sql = "{CALL sp_AdjustUserCredit(?, ?, ?, ?)}"
+        try:
+            # Use the injected execute_query function
+            # sp_AdjustUserCredit returns a success message or raises errors
+            result = await self.user_dal.adjust_user_credit(conn, user_id, credit_adjustment, admin_id, reason) # Call the DAL method
+
+            # DAL.adjust_user_credit is expected to raise NotFoundError, ForbiddenError, or DALError on failure
+            # It returns True on success.
+            if not result:
+                 # This case should ideally be covered by exceptions from DAL, but as a safeguard
+                 raise DALError("用户信用分调整失败：数据库操作未能完成或用户不存在/无权限(意外)。") # Unexpected DAL failure
+
+            return True # Credit adjustment successful
+
+        except (NotFoundError, ForbiddenError, DALError) as e:
+            # Catch specific exceptions from DAL and potentially re-raise or convert
+            # For specific DAL errors related to credit limits or missing reason, re-raise as ValueError or similar
+            if isinstance(e, DALError):
+                if "信用分不能超过100" in str(e) or "信用分不能低于0" in str(e):
+                    raise ValueError(str(e)) from e # Convert credit limit errors to ValueError
+                if "调整信用分必须提供原因" in str(e):
+                    raise ValueError(str(e)) from e # Convert missing reason error to ValueError
+            raise e # Re-raise NotFoundError, ForbiddenError, or other DALError
+        except Exception as e:
+            print(f"ERROR: Unexpected error in adjust_user_credit service for user {user_id}, admin {admin_id}: {e}")
+            raise e # Re-raise other unexpected errors
+
+    async def get_all_users(self, conn: pyodbc.Connection, admin_id: UUID) -> list[UserResponseSchema]:
         """Service layer function for admin to get all users.
         Calls DAL and handles permissions/errors."""
+        print(f"DEBUG Service: get_all_users received admin_id: {admin_id} (type: {type(admin_id)})") # Debug print
         try:
             # DAL layer is expected to handle admin permission check and potential errors
             users = await self.user_dal.get_all_users(conn, admin_id)
-            return users
+
+            # Convert each user dict in the list
+            converted_users = [self._convert_dal_user_to_schema(user) for user in users] if users else [] # Handle empty list case
+            return converted_users # Returns a list of converted user dictionaries
+
         except (ForbiddenError, NotFoundError, DALError) as e:
             # Re-raise specific exceptions from DAL
             raise e
         except Exception as e:
             print(f"ERROR: Unexpected error in get_all_users service for admin {admin_id}: {e}")
             raise e # Re-raise other unexpected errors
+
+    def _convert_dal_user_to_schema(self, dal_user_data: dict) -> dict:
+        """Converts a dictionary from DAL (potentially with DB keys) to a dictionary matching UserResponseSchema keys (snake_case)."""
+        if not dal_user_data:
+            return {}
+            
+        # Define mapping from potential DAL keys to UserResponseSchema keys
+        # Assuming common variations and Chinese keys from SPs
+        key_mapping = {
+            '用户ID': 'user_id',
+            'UserID': 'user_id', # Handle both potential key names from DAL
+            '用户名': 'username',
+            'UserName': 'username',
+            '邮箱': 'email',
+            'Email': 'email',
+            '账户状态': 'status',
+            'Status': 'status',
+            '信用分': 'credit',
+            'Credit': 'credit',
+            '是否管理员': 'is_staff',
+            'IsStaff': 'is_staff',
+            '是否已认证': 'is_verified',
+            'IsVerified': 'is_verified',
+            '专业': 'major',
+            'Major': 'major',
+            '头像URL': 'avatar_url',
+            'AvatarUrl': 'avatar_url',
+            '个人简介': 'bio',
+            'Bio': 'bio',
+            '手机号码': 'phone_number',
+            'PhoneNumber': 'phone_number',
+            '注册时间': 'join_time',
+            'JoinTime': 'join_time', # Handle both potential key names from DAL
+            # Add other potential keys if necessary
+        }
+
+        # Create a new dictionary with schema-compatible keys
+        schema_data = {}
+        for dal_key, schema_key in key_mapping.items():
+            # Use .get() with a default of None in case a key is missing in the DAL dict
+            value = dal_user_data.get(dal_key)
+            if value is not None:
+                # Let Pydantic handle the conversion when creating the schema instance
+                schema_data[schema_key] = value # Pass the raw value (UUID, datetime objects etc.)
+
+        # Ensure all expected keys from UserResponseSchema are present, even if None
+        # This might not be strictly necessary as Pydantic can handle missing optional fields,
+        # but it can help ensure consistency in the Service layer output.
+        # However, for simplicity and to avoid issues with potentially non-optional fields missing from DAL,
+        # let's rely on Pydantic's validation on the Router side.
+
+        # Return a UserResponseSchema instance directly from the converted data
+        # Pydantic should handle conversion of UUID string and datetime string to UUID and datetime objects
+        try:
+            # Create and validate the schema instance
+            return UserResponseSchema(**schema_data)
+        except Exception as e:
+            # Log potential validation errors during conversion
+            print(f"ERROR: Failed to convert DAL user data to UserResponseSchema: {e} for data: {schema_data}")
+            # Re-raise as a Service layer error, possibly with more context
+            raise DALError(f"Failed to process user data from database: {e}") from e
 
 # TODO: Add service functions for admin operations (get all users, disable/enable user etc.)

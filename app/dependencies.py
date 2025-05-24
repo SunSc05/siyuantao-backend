@@ -21,17 +21,18 @@ from app.dal.base import execute_query # Import execute_query from base.py
 # user_service_instance = UserService(user_dal_instance)
 
 # Dependency to get a database connection
-async def get_db_conn():
-    """Dependency that provides a database connection."""
-    # Assuming get_db_connection manages context (e.g., is a context manager)
-    # If not, this needs adjustment based on how get_db_connection works
-    conn = get_db_connection() # Get the connection
-    # You might want to add exception handling and closing the connection here
-    try:
-        yield conn
-    finally:
-        if conn: # Ensure conn is not None before closing
-            conn.close()
+# 直接使用 get_db_connection，无需在此重复定义 get_db_conn
+# async def get_db_conn():
+#     """Dependency that provides a database connection."""
+#     # Assuming get_db_connection manages context (e.g., is a context manager)
+#     # If not, this needs adjustment based on how get_db_connection works
+#     conn = get_db_connection() # Get the connection
+#     # You might want to add exception handling and closing the connection here
+#     try:
+#         yield conn
+#     finally:
+#         if conn: # Ensure conn is not None before closing
+#             conn.close()
 
 
 # Dependency to get a UserService instance
@@ -50,7 +51,11 @@ ALGORITHM = "HS256" # Assuming ALGORITHM is consistently "HS256"
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login") # 指向登录API端点
 
 # 获取当前活动用户
-async def get_current_user(token: str = Depends(oauth2_scheme), conn: pyodbc.Connection = Depends(get_db_conn), user_service: UserService = Depends(get_user_service)): # Inject UserService
+# 将 conn 依赖项从这里移除，因为 get_user_profile_by_id 方法需要 conn，应该在调用服务方法时传递
+# service 方法本身接收 conn，而不是依赖项获取 conn 再传给 service
+# async def get_current_user(token: str = Depends(oauth2_scheme), user_service: UserService = Depends(get_user_service), conn: pyodbc.Connection = Depends(get_db_connection)): # Inject DB connection here
+# 修改 get_current_user 依赖项，使其返回一个包含用户关键信息（如 user_id, is_staff, is_verified）的字典
+async def get_current_user(token: str = Depends(oauth2_scheme)):
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="无法验证的凭据",
@@ -67,23 +72,38 @@ async def get_current_user(token: str = Depends(oauth2_scheme), conn: pyodbc.Con
             user_uuid = UUID(user_id) # Convert user_id string from token to UUID
         except ValueError:
              raise credentials_exception # Invalid user_id format in token
-        token_data = TokenData(user_id=user_uuid)
+        # token_data = TokenData(user_id=user_uuid) # TokenData schema might not be needed here
     except JWTError:
         raise credentials_exception
 
-    # 根据用户ID从数据库获取用户数据，通过Service层调用
-    # Pass the connection and user_id to the service method
-    user = await user_service.get_user_profile_by_id(conn, token_data.user_id)
-    if user is None: # User found in token but not in database (e.g., deleted user) - considered invalid credentials
-        raise credentials_exception # 用户不存在
-    return user # 返回用户字典数据
+    # Return a dict containing user key information from the token payload
+    user_payload = {
+        "user_id": user_uuid, # Return UUID object consistent with test mocks
+        "is_staff": payload.get("is_staff", False),
+        "is_verified": payload.get("is_verified", False) # Include verification status
+    }
+    
+    # Optional: Add a quick check if the user actually exists in the DB if needed for stricter security,
+    # but avoid fetching the full profile here. This would require injecting get_db_connection here.
+    # For now, we rely on the router/service to handle cases where the user ID from the token doesn't exist in DB.
+
+    return user_payload # 返回包含用户ID、is_staff等的字典数据
 
 # 获取当前活动用户（仅限管理员）
+# This dependency now depends on get_current_user, which returns a dict.
+# We only need the current_user dict to check for 'is_staff'.
+# We don't need to inject conn here as the admin check is based on the token payload info provided by get_current_user.
 async def get_current_active_admin_user(current_user: dict = Depends(get_current_user)):
     # 检查 IsStaff 字段，需要先确保 get_current_user 返回的用户字典中包含 'IsStaff' 键
-    if current_user is None or not current_user.get('IsStaff', False): # 检查 IsStaff 字段
+    # The key in the dict returned by get_current_user should be 'is_staff' (snake_case)
+    # based on the expected keys from the token payload and test mocks.
+    if current_user is None or not current_user.get('is_staff', False): # Check 'is_staff' field
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="需要管理员权限")
-    return current_user
+    return current_user # Return the user dict (containing user_id, is_staff, etc.)
+
+# TODO: Add get_db_connection dependency injector (Already done by importing get_db_connection)
+# TODO: Implement authentication dependency get_current_user (Done, adjusted return type)
+# TODO: Implement admin authentication dependency get_current_active_admin_user (Done)
 
 # TODO: Add get_db_connection dependency injector
 # async def get_db():
