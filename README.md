@@ -111,7 +111,6 @@ backend/
 │   ├── routers/          # API 路由定义，处理 HTTP 请求和响应
 │   ├── services/         # 业务逻辑层，处理具体的业务流程
 │   ├── dal/              # 数据访问层 (Data Access Layer)，负责与数据库交互
-│   │   └── tests/        # DAL 单元测试
 │   ├── schemas/          # Pydantic 模型定义，用于请求验证和响应序列化
 │   ├── utils/            # 通用工具函数
 │   ├── main.py           # 应用入口文件，初始化 FastAPI 应用，包含根路由等
@@ -126,9 +125,11 @@ backend/
 │   └── drop_all.sql      # 删除所有数据库对象的脚本
 ├── docs/                 # 项目文档，包括数据库设计、部署指南等
 ├── tests/                # 应用级测试，如 API 集成测试
-│   ├── test_users_api.py # 用户相关的 API 测试示例
+│   └── user/             # 用户模块的测试
+│   │   ├── test_user_service.py    # 业务逻辑测试
+│   │   ├── test_users_api.py       # API 回归测试
+│   │   ├── test_users_dal.py       # DAL 单元测试
 │   └── conftest.py       # pytest 配置文件，用于测试fixture等
-├── .venv/                # Python 虚拟环境目录
 ├── README.md             # 项目说明文档
 ├── requirements.txt      # 项目依赖库列表
 └── .gitignore            # Git 忽略文件配置
