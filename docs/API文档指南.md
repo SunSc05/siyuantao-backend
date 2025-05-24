@@ -6,10 +6,10 @@
 
 启动 FastAPI 应用后，您可以通过以下 URL 访问自动生成的 API 文档：
 
-*   **Swagger UI**: `http://127.0.0.1:8000/docs` （或其他您配置的地址）
+*   **Swagger UI**: `http://127.0.0.1:8000/docs` 
     *   提供交互式的 API 调试界面，可以直接在浏览器中测试 API。
 
-*   **ReDoc**: `http://127.0.0.1:8000/redoc` （或其他您配置的地址）
+*   **ReDoc**: `http://127.0.0.1:8000/redoc` 
     *   提供简洁美观的 API 文档展示界面，适合阅读。
 
 ### 2. API 设计约定
@@ -36,10 +36,21 @@ import axios from 'axios';
 
 const API_BASE_URL = 'http://127.0.0.1:8000/api/v1'; // 根据实际部署地址修改
 
-// 获取用户列表 (示例)
+// 假设已经获取了 access_token
+const accessToken = 'your_access_token_here'; 
+
+// 创建一个带有认证头的 axios 实例
+const authAxios = axios.create({
+  baseURL: API_BASE_URL,
+  headers: {
+    Authorization: `Bearer ${accessToken}` // 在请求头中携带 Token
+  }
+});
+
+// 获取用户列表 (示例，需要认证)
 async function getUsers(page = 1, pageSize = 10) {
   try {
-    const response = await axios.get(`${API_BASE_URL}/users`, {
+    const response = await authAxios.get('/users', {
       params: {
         page: page,
         page_size: pageSize
@@ -52,10 +63,10 @@ async function getUsers(page = 1, pageSize = 10) {
   }
 }
 
-// 创建新用户 (示例)
+// 创建新用户 (示例，需要认证)
 async function createUser(userData) {
   try {
-    const response = await axios.post(`${API_BASE_URL}/users`, userData);
+    const response = await authAxios.post('/users', userData);
     return response.data;
   } catch (error) {
     console.error('Error creating user:', error);
@@ -63,11 +74,21 @@ async function createUser(userData) {
   }
 }
 
-// 认证 (待补充具体认证流程，例如 token)
-// async function login(credentials) { ... }
+// 登录示例 (无需认证头)
+async function login(credentials) {
+  try {
+    const response = await axios.post(`${API_BASE_URL}/auth/login`, credentials); // 登录接口通常不需要认证头
+    // 登录成功后，从响应中获取 token 并保存
+    const { access_token, token_type } = response.data; // 假设响应体包含 access_token 和 token_type
+    console.log('Access Token:', access_token);
+    // 可以将 access_token 存储在 localStorage 或 Vuex/Redux store 中
+    return response.data;
+  } catch (error) {
+    console.error('Error during login:', error);
+    throw error;
+  }
+}
 ```
-
-**认证**: 项目将实现基于 Token 或其他机制的认证。受保护的 API 接口需要客户端在请求头中附带有效的认证信息（例如 `Authorization: Bearer <token>`）。
 
 ### 4. 错误处理
 
@@ -79,21 +100,30 @@ async function createUser(userData) {
 {
   "detail": "错误信息描述",
   "code": 1001, // 可选：自定义错误码
-  "field": "password" // 可选：如果错误与特定字段相关
+  "field": "password" // 可选：如果错误与特定字段相关（常见于 422 错误）
 }
 ```
 
 **常见的 HTTP 状态码和错误场景:**
 
-*   `400 Bad Request`: 请求参数验证失败、请求体格式错误等。
+*   `400 Bad Request`: 请求参数验证失败、请求体格式错误（非 Pydantic 验证）等。
 *   `401 Unauthorized`: 未提供认证信息或认证信息无效。
 *   `403 Forbidden`: 已认证用户无权访问该资源或执行该操作。
 *   `404 Not Found`: 请求的资源不存在。
 *   `405 Method Not Allowed`: 使用了不支持的 HTTP 方法。
 *   `409 Conflict`: 请求与当前资源状态冲突（例如尝试创建已存在的资源）。
-*   `422 Unprocessable Entity`: 请求格式正确但包含语义错误（由 Pydantic 验证产生）。
+*   `422 Unprocessable Entity`: 请求格式正确但包含语义错误，通常由 Pydantic 模型验证产生。
 *   `500 Internal Server Error`: 服务器内部发生未知错误。
 
 客户端在接收到非 2xx 状态码的响应时，应检查响应体获取详细错误信息，并向用户显示友好的错误提示。
+
+### 5. 认证与授权
+
+本项目采用 JWT (JSON Web Token) 进行认证。
+
+*   **认证流程**: 客户端通过登录接口 (`/api/v1/auth/login`) 获取 JWT (`access_token`)。
+*   **授权访问**: 客户端在调用受保护的 API 接口时，在 HTTP 请求的 `Header` 中携带 `Authorization: Bearer <access_token>`。
+
+在 Swagger UI (`/docs`) 中，你可以点击右上角的 "Authorize" 按钮，选择 "bearerAuth" (或其他配置的认证方案)，并输入你的 `access_token` 来进行交互式测试。
 
 --- 

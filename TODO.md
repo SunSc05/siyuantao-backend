@@ -2,6 +2,12 @@
 
 ---
 
+## Git 工作流集成约定
+
+当你开始一个 TODO 任务时（例如：`[ ] TODO: 实现商品创建API`），请创建一个对应的 Git 分支。分支名可以与任务关联，例如 `feature/B-create-product-api` (其中 `B` 代表开发者，`create-product-api` 描述任务)。这有助于将代码提交与任务关联，提高协作效率。
+
+---
+
 ## 项目总览
 本文档旨在提供【思源淘】项目的开发任务总览，按照技术层级进行划分，并细化到具体的功能模块和文件路径。请各位开发者根据分配的模块，及时更新相关任务的状态。
 
@@ -168,7 +174,7 @@
     * [x] **DONE:** `adjust_user_credit(...)`: 调用 DAL 调整用户信用分（管理员）。
     * [x] **DONE:** `get_all_users(...)`: 调用 DAL 获取所有用户列表（管理员）。
 * **文件:** `backend/tests/modules/user/test_user_service.py`
-    * [ ] **TODO:** 编写 `UserService` 中所有业务方法的单元测试，使用 Mocking 模拟 `UserDAL` 及其他外部服务。
+    * [x] **DONE:** 编写 `UserService` 中所有业务方法的单元测试，使用 Mocking 模拟 `UserDAL` 及其他外部服务。
 
 ### 3.2 商品模块
 * **文件:** `backend/src/modules/product/services/product_service.py`
