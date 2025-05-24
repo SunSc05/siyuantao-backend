@@ -1,0 +1,85 @@
+name: Deploy Backend to Production
+
+# 当代码推送到 main 分支时触发
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+    # 第一步：检出你的代码库
+    - name: Checkout code
+      uses: actions/checkout@v4 # 使用较新版本的 checkout action
+
+    # 第二步：设置 SSH Agent，以便使用私钥连接服务器
+    - name: Setup SSH connection
+      uses: webfactory/ssh-agent@v0.9.0 # 使用较新版本的 ssh-agent action
+      with:
+        ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }} # 使用你添加到 GitHub Secrets 的私钥
+
+    # 第三步：将你的服务器添加到 known_hosts，避免首次连接时的确认提示
+    - name: Add server to known_hosts
+      run: ssh-keyscan -H ${{ secrets.SSH_HOST }} >> ~/.ssh/known_hosts
+
+    # 第四步：连接到服务器并执行部署命令
+    - name: Deploy to Server
+      run: |
+        ssh -o StrictHostKeyChecking=no ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} << 'EOF'
+          set -e # 任意命令失败时立即退出
+
+          echo "Changing to project directory: ${{ secrets.PROJECT_PATH }}"
+          cd ${{ secrets.PROJECT_PATH }}
+
+          # --- 使用 Git 更新代码 ---
+          echo "Updating code..."
+          # 确保远程是 SSH (如果服务器SSH到GitHub有问题，可能需要考虑HTTPS并在secrets中保存token)
+          # git remote set-url origin git@github.com:SiyuanTao-BJTU/siyuantao-backend.git || echo "Remote URL already SSH or failed, continuing..."
+
+          # 添加安全目录配置 (如果运行用户不是目录所有者)
+          echo "Configuring safe directory..."
+          git config --global --add safe.directory ${{ secrets.PROJECT_PATH }} || echo "Safe directory already configured or failed, continuing..."
+
+          # 暂存服务器上的本地修改 (比如生产 .env 文件，防止被 pull 覆盖)
+          echo "Stashing local changes..."
+          git stash push -m "Stashed before deployment by GitHub Actions" || echo "Nothing to stash, continuing..."
+
+          # 拉取最新的代码
+          echo "Pulling latest code..."
+          git pull origin main # 或 master
+
+          # 尝试恢复暂存 (如果 pull 没有冲突)
+          echo "Applying stashed changes..."
+          git stash pop || echo "No stash to pop or conflicts occurred, continuing..."
+
+          # --- 后续步骤 ---
+          # 激活 Conda 虚拟环境
+          echo "Activating virtual environment..."
+          source $(conda info --base)/etc/profile.d/conda.sh # 初始化 conda base
+          conda activate backend-py312
+
+          # 安装/更新 Python 依赖
+          echo "Installing/Updating dependencies..."
+          pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+
+          # 执行数据库初始化/更新脚本 (如果需要) - 根据实际情况添加
+          # echo "Running database initialization/update scripts..."
+          # python db_init.py # 或者其他执行 SQL 脚本的命令
+
+          # 重启 ASGI 应用服务器 (Gunicorn)
+          echo "Restarting Gunicorn service..."
+          sudo systemctl restart gunicorn_siyuantao # 替换为你的 Systemd 服务名称
+
+          # 检查服务状态 (可选)
+          echo "Checking Gunicorn service status..."
+          sudo systemctl status gunicorn_siyuantao --no-pager || echo "Failed to get Gunicorn status, check manually."
+
+          echo "Deployment process completed!"
+        EOF
+      env:
+        # 将必要的敏感信息通过环境变量传递给 SSH 命令 (如果不在 systemd 中配置)
+        # 例如:
+        # DATABASE_PASSWORD: ${{ secrets.DB_PASSWORD }}
+        CI: true 
