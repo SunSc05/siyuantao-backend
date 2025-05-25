@@ -45,21 +45,27 @@ class UserDAL:
             logger.error(f"Error getting user by username {username}: {e}")
             raise DALError(f"Database error while fetching user by username: {e}") from e
 
-    async def create_user(self, conn: pyodbc.Connection, username: str, email: str, hashed_password: str) -> dict:
+    async def create_user(self, conn: pyodbc.Connection, username: str, hashed_password: str, phone_number: str, major: Optional[str] = None) -> dict:
         """在数据库中创建新用户并返回其数据。"""
-        sql = "{CALL sp_CreateUser(?, ?, ?)}"
+        sql = "{CALL sp_CreateUser(?, ?, ?, ?)}"
         try:
             # 调用 sp_CreateUser 存储过程
             # Use the injected execute_query function
-            result = await self._execute_query(conn, sql, (username, email, hashed_password), fetchone=True)
+            # Pass parameters in the order expected by the stored procedure
+            result = await self._execute_query(conn, sql, (username, hashed_password, phone_number, major), fetchone=True)
 
-            if result and isinstance(result, dict) and '用户名已存在' in result.values():
-                raise IntegrityError("Username already exists.")
-            if result and isinstance(result, dict) and '邮箱已存在' in result.values():
-                raise IntegrityError("Email already exists.")
-            if result and isinstance(result, dict) and '用户创建失败' in result.values():
-                 raise DALError("User creation failed in stored procedure.")
-
+            if result and isinstance(result, dict):
+                # Check for specific error messages returned by SP (less ideal, but handles SPs that don't throw)
+                error_message = result.get('')
+                if error_message:
+                    if '用户名已存在' in error_message:
+                        raise IntegrityError("Username already exists.")
+                    elif '手机号已存在' in error_message:
+                         raise IntegrityError("Phone number already exists.")
+                    else:
+                        # Handle other potential error messages returned by SP as DALError
+                        raise DALError(f"Stored procedure error during user creation: {error_message}")
+                
             # sp_CreateUser 返回新用户的 NewUserID，需要再次查询获取完整信息
             if result and isinstance(result, dict) and 'NewUserID' in result:
                  new_user_id = result['NewUserID']
@@ -71,54 +77,76 @@ class UserDAL:
                      # 这通常不应该发生，除非紧接着查询失败
                      raise DALError(f"Failed to retrieve full user info after creation for ID: {new_user_id}")
 
-            raise DALError("User creation failed: Unexpected response from stored procedure.")
+            raise DALError("User creation failed: Unexpected successful response from stored procedure.")
 
         except IntegrityError:
-            raise # Re-raise the IntegrityError
+            # Re-raise IntegrityError directly so Service layer can handle it
+            raise 
+        except pyodbc.IntegrityError as e:
+             # Catch pyodbc.IntegrityError specifically raised by the driver
+             error_message = str(e)
+             if 'Duplicate username' in error_message or '用户名已存在' in error_message:
+                 raise IntegrityError("Username already exists.") from e
+             elif 'Duplicate phone' in error_message or '手机号已存在' in error_message:
+                 raise IntegrityError("Phone number already exists.") from e
+             else:
+                 # Re-raise other IntegrityErrors as DALError if not specific duplicate key errors
+                 logger.error(f"Unexpected Integrity Error during user creation: {e}")
+                 raise DALError(f"Database integrity error during user creation: {e}") from e
         except Exception as e:
+            # Catch all other exceptions and wrap in DALError
             logger.error(f"Error creating user {username}: {e}")
             raise DALError(f"Database error during user creation: {e}") from e
 
-    async def update_user_profile(self, conn: pyodbc.Connection, user_id: UUID, major: str = None, avatar_url: str = None, bio: str = None, phone_number: str = None) -> dict | None:
-        """更新用户个人资料。"""
+    async def update_user_profile(self, conn: pyodbc.Connection, user_id: UUID, *, major: Optional[str] = None, avatar_url: Optional[str] = None, bio: Optional[str] = None, phone_number: Optional[str] = None) -> dict | None:
+        """更新现有用户的个人资料，返回更新后的用户数据。"""
         sql = "{CALL sp_UpdateUserProfile(?, ?, ?, ?, ?)}"
         try:
-            # 调用 sp_UpdateUserProfile 存储过程
-            # Use the injected execute_query function
-            result = await self._execute_query(conn, sql, (user_id, major, avatar_url, bio, phone_number), fetchone=True)
+            result = await self._execute_query(
+                conn, sql,
+                (user_id, major, avatar_url, bio, phone_number),
+                fetchone=True
+            )
 
-            if result and isinstance(result, dict) and '用户不存在。' in result.values():
-                raise NotFoundError(f"User with ID {user_id} not found for update.")
-            if result and isinstance(result, dict) and '此手机号码已被其他用户使用。' in result.values():
-                 raise IntegrityError("Phone number already in use by another user.")
-            if result and isinstance(result, dict) and '用户信息更新完成并查询成功' in result.values(): # SP 的额外返回
-                 # 需要再次查询获取更新后的完整用户信息，或者修改SP使其直接返回完整信息
-                 # 如果SP的返回包含了用户字段，直接返回即可
-                 # 如果SP只返回成功消息，则需要再次调用 get_user_by_id
-                 # 这里假设SP返回了更新后的用户数据
-                 # 检查返回是否是用户数据而不是仅有的成功消息
-                 if result and isinstance(result, dict) and '用户ID' in result: # 检查是否包含用户profile字段
-                     return result
-                 else:
-                     # 如果SP只返回了成功消息，则重新查询，使用类内部的方法
-                     updated_user_info = await self.get_user_by_id(conn, user_id)
-                     return updated_user_info
+            if result and isinstance(result, dict): # Assuming SP returns the updated user data or a success indicator
+                error_message = result.get('')
+                if error_message:
+                    if '用户未找到' in error_message:
+                        raise NotFoundError(f"User with ID {user_id} not found for update.")
+                    # Prioritize checking for the specific phone number duplicate error message from SP
+                    elif '手机号码已存在' in error_message or '手机号已存在' in error_message:
+                         raise IntegrityError("Phone number already in use by another user.")
+                    else:
+                         # If it's an error from SP but not specific to user not found or duplicate phone
+                         raise DALError(f"Stored procedure error during profile update: {error_message}")
 
-            # 如果没有抛出错误且有返回但不是预期的错误或成功消息，可能是意外情况
-            if result and isinstance(result, dict): # Ensure result is a dict if not None
-                 logger.warning(f"Unexpected response from sp_UpdateUserProfile for user {user_id}: {result}")
-                 # 尝试重新获取用户数据作为回退，使用类内部的方法
-                 updated_user_info = await self.get_user_by_id(conn, user_id)
-                 return updated_user_info
+                return result # Return the dictionary fetched by execute_query(fetchone=True) which should be the updated user data
+            elif result is None:
+                 return None # Or raise NotFoundError if SP indicates user not found by returning None
 
-            # 如果没有任何返回，且没有抛出错误，可能是用户存在但没有字段更新
-            # 此时认为更新成功，返回用户当前信息，使用类内部的方法
-            return await self.get_user_by_id(conn, user_id)
+            # If result is not None and not a dict with an error message, assume success and return the data
+            # raise DALError("User profile update failed: Unexpected response from stored procedure.") # Removed, handle success case explicitly
 
-        except (NotFoundError, IntegrityError) as e:
-            raise e # Re-raise NotFoundError or IntegrityError
+        except NotFoundError as e:
+             raise e # Re-raise NotFoundError caught from our checks
+        except IntegrityError as e:
+             raise e # Re-raise IntegrityError caught from our checks (duplicate phone)
+        except pyodbc.IntegrityError as e:
+             # Catch pyodbc.IntegrityError raised by the driver
+             error_message = str(e)
+             # Check for specific error messages related to duplicate phone number from the driver
+             # These might be different depending on the database and driver configuration
+             error_message_lower = error_message.lower()
+             # Example patterns for duplicate key errors, specifically looking for phone number context
+             if ('duplicate key' in error_message_lower or '违反唯一约束' in error_message_lower) and ('phone' in error_message_lower or '手机' in error_message_lower):
+                 raise IntegrityError("Phone number already in use by another user.") from e
+             else:
+                 # Re-raise other IntegrityErrors as DALError or a more specific error
+                 logger.error(f"Unexpected pyodbc.IntegrityError during profile update for user {user_id}: {e}")
+                 raise DALError(f"Database integrity error during profile update: {e}") from e
         except Exception as e:
-            logger.error(f"Error updating user profile for user {user_id}: {e}")
+            logger.error(f"Error updating user profile for {user_id}: {e}")
+            # Catch any other unexpected exceptions during the DAL operation
             raise DALError(f"Database error during user profile update: {e}") from e
 
     async def update_user_password(self, conn: pyodbc.Connection, user_id: UUID, hashed_password: str) -> bool:

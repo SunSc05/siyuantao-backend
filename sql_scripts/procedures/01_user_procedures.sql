@@ -67,14 +67,14 @@ BEGIN
 END;
 GO
 
--- 创建新用户
+-- 创建新用户 (修改为只接收用户名、密码哈希、手机号、可选专业)
 DROP PROCEDURE IF EXISTS [sp_CreateUser];
 GO
 CREATE PROCEDURE [sp_CreateUser]
     @username NVARCHAR(128),
     @passwordHash NVARCHAR(128),
-    @email NVARCHAR(254)
-    -- 其他字段如 Major, AvatarUrl, Bio, PhoneNumber 可在 profile update 时添加
+    @phoneNumber NVARCHAR(20), -- 添加手机号参数 (必填)
+    @major NVARCHAR(100) = NULL -- 添加major参数 (可选，带默认值NULL)
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -82,7 +82,7 @@ BEGIN
 
     -- 声明变量用于存储检查结果和新用户ID
     DECLARE @existingUserCount INT;
-    DECLARE @existingEmailCount INT;
+    DECLARE @existingPhoneCount INT; -- 添加手机号存在检查变量
     DECLARE @newUserId UNIQUEIDENTIFIER = NEWID(); -- 提前生成UUID
 
     -- 使用BEGIN TRY...BEGIN TRANSACTION 确保原子性
@@ -99,43 +99,41 @@ BEGIN
             RETURN;
         END
 
-        -- 检查邮箱是否存在
-        SELECT @existingEmailCount = COUNT(1) FROM [User] WHERE Email = @email;
-        IF @existingEmailCount > 0
+        -- 检查手机号码是否存在 (手机号码也需要唯一)
+        SELECT @existingPhoneCount = COUNT(1) FROM [User] WHERE PhoneNumber = @phoneNumber;
+        IF @existingPhoneCount > 0
         BEGIN
-            RAISERROR('邮箱已存在', 16, 1);
-             IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+            RAISERROR('手机号码已存在', 16, 1);
+            -- 跳出事务并返回
+            IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
             RETURN;
         END
 
-        -- 插入新用户记录
-        -- SQL语句1 (INSERT)
-        INSERT INTO [User] (
-            UserID, UserName, Password, Email,
-            Status, Credit, IsStaff, IsVerified, JoinTime,
-            Major, AvatarUrl, Bio, PhoneNumber, VerificationToken, TokenExpireTime
-        )
-        VALUES (
-            @newUserId, @username, @passwordHash, @email,
-            'Active', 100, 0, 0, GETDATE(),
-            NULL, NULL, NULL, NULL, NULL, NULL -- 默认值或NULL
-        );
+        -- 检查邮箱是否存在 -- 移除此检查
+        -- SELECT @existingEmailCount = COUNT(1) FROM [User] WHERE Email = @email;
+        -- IF @existingEmailCount > 0
+        -- BEGIN
+        --     RAISERROR('邮箱已存在', 16, 1);
+        --     IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        --     RETURN;
+        -- END
 
-        -- 检查插入是否成功 (可选，因为如果失败会抛出异常)
-        -- IF @@ROWCOUNT = 0 THROW 50000, '用户创建失败', 1;
+        -- 插入新用户数据
+        INSERT INTO [User] (UserID, UserName, PasswordHash, Email, Status, Credit, IsStaff, IsVerified, Major, AvatarUrl, Bio, PhoneNumber, JoinTime)
+        VALUES (@newUserId, @username, @passwordHash, NULL, 'Active', 100, 0, 0, @major, NULL, NULL, @phoneNumber, GETDATE()); -- Email 设置为 NULL
 
-        COMMIT TRANSACTION; -- 提交事务
+        -- 提交事务
+        COMMIT TRANSACTION;
 
-        -- 返回新创建的用户ID (SQL语句2: SELECT)
-        SELECT @newUserId AS NewUserID;
+        -- 返回新用户的 UserID
+        SELECT @newUserId AS NewUserID, '用户创建成功并查询成功' AS Message; -- 返回新用户ID和成功消息
 
     END TRY
     BEGIN CATCH
-        -- 捕获到错误，回滚事务
-        IF @@TRANCOUNT > 0
-            ROLLBACK TRANSACTION;
+        -- 捕获错误，回滚事务
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
 
-        -- 重新抛出原始错误
+        -- 重新抛出错误
         THROW;
     END CATCH
 END;

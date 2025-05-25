@@ -20,6 +20,7 @@ from app.exceptions import NotFoundError, IntegrityError, DALError, ForbiddenErr
 import asyncio # For explicit async calls
 from datetime import datetime, timedelta, timezone # Needed for token expiration tests
 from app.dal.base import execute_query # Import the execute_query function
+import pyodbc # Added for pyodbc.Error
 
 # Configure test database connection string (get from environment or a separate test config)
 # TEST_DB_CONN_STR = get_connection_string() # Not needed for mocked unit tests
@@ -184,162 +185,132 @@ async def test_get_user_by_username_with_password_not_found(user_dal: UserDAL, m
 
 @pytest.mark.asyncio
 async def test_create_user_success(user_dal: UserDAL, mock_execute_query: AsyncMock):
-    username = "new_user_dal"
-    email = "new_dal@example.com"
-    password_hash = "new_hashed_pass"
-    new_user_id = UUID('87654321-4321-8765-4321-876543210987')
+    # Arrange
+    username = "testuser_dal"
+    # email = "test_dal@example.com" # Removed email
+    hashed_password = "hashed_password_xyz"
+    major = "Engineering"
+    phone_number = "5555555555" # Added phone_number
 
-    # Simulate sp_CreateUser to return NewUserID
-    # The create_user DAL method internally calls get_user_by_id, which uses the injected execute_query.
-    # So we need to mock the side_effect for the injected mock_execute_query.
+    # Simulate the stored procedure returning the new user ID upon successful creation
+    # The SP should return a result set with a 'NewUserID' column
+    mock_execute_query.return_value = {'NewUserID': uuid4()}
+    
+    # Simulate the subsequent query in DAL fetching the complete user data
+    # This is what the create_user DAL method now returns after getting the NewUserID
+    created_user_data_from_db = {
+        "UserID": uuid4(),
+        "UserName": username,
+        "邮箱": None, # Email is NULL on registration now
+        "Status": "Active",
+        "Credit": 100,
+        "IsStaff": False,
+        "IsVerified": False,
+        "Major": major,
+        "AvatarUrl": None,
+        "Bio": None,
+        "PhoneNumber": phone_number, # Include phone_number
+        "JoinTime": datetime.utcnow(), # Use datetime object
+        "StudentID": None, # Include StudentProfile fields as None
+        "VerifiedRealName": None,
+        "VerifiedDepartment": None,
+        "VerifiedClass": None,
+        "VerifiedDormitory": None,
+        "StudentAuthStatus": None,
+    }
+    # Mock the second call to execute_query (the fetch by ID) to return the complete user data
+    # We need to configure the mock to return different values on consecutive calls
     mock_execute_query.side_effect = [
-        { 'NewUserID': new_user_id }, # First call for create_user SP
-        { # Second call for get_user_by_id
-            '用户ID': new_user_id,
-            '用户名': username,
-            '邮箱': email,
-            '账户状态': "Active",
-            '信用分': 100,
-            '是否管理员': False,
-            '是否已认证': False,
-            '专业': None,
-            '头像URL': None,
-            '个人简介': None,
-            '手机号码': None,
-            '注册时间': datetime.now()
-        }
+        {'NewUserID': created_user_data_from_db["UserID"]}, # First call for SP execution
+        created_user_data_from_db # Second call for fetching user profile
     ]
 
-    mock_conn = AsyncMock()
-    # user_dal fixture already provides the DAL instance with mocked execute_query
-    created_user = await user_dal.create_user(mock_conn, username, email, password_hash)
+    # Act
+    # Call the DAL method with updated parameters (no email, with phone_number)
+    created_user_data = await user_dal.create_user(mock_execute_query, username, hashed_password, phone_number, major=major)
 
-    assert created_user is not None
-    assert created_user['用户ID'] == new_user_id
-    assert created_user['用户名'] == username
-    assert created_user['邮箱'] == email
-    # Check that execute_query was called twice:
-    # Once for sp_CreateUser
-    mock_execute_query.call_args_list[0].assert_called_with(
-        mock_conn,
-        "{CALL sp_CreateUser(?, ?, ?)}",
-        (username, email, password_hash),
-        fetchone=True
-    )
-    # Once for get_user_by_id (called internally by create_user)
-    mock_execute_query.call_args_list[1].assert_called_with(
-         mock_conn,
-         "{CALL sp_GetUserProfileById(?)}",
-         (new_user_id,),
-         fetchone=True
-    )
+    # Assert
+    # Assert that execute_query was called twice
+    assert mock_execute_query.call_count == 2
+    
+    # Assert the first call to execute_query for the stored procedure
+    # The call should include the updated parameters (no email, with phone_number)
+    # The order should match the SP definition: username, passwordHash, phoneNumber, major
+    expected_sql_sp = "{CALL sp_CreateUser(?, ?, ?, ?)}"
+    expected_params_sp = (username, hashed_password, phone_number, major)
+    mock_execute_query.call_args_list[0].assert_called_with(expected_sql_sp, expected_params_sp, fetchone=True)
+
+    # Assert the second call to execute_query for fetching the user profile
+    # This call happens internally in the DAL's create_user method after getting the NewUserID
+    # The SQL and parameters should match the call to sp_GetUserProfileById
+    expected_user_id = created_user_data_from_db["UserID"]
+    expected_sql_fetch = "{CALL sp_GetUserProfileById(?)}"
+    expected_params_fetch = (expected_user_id,)
+    mock_execute_query.call_args_list[1].assert_called_with(expected_sql_fetch, expected_params_fetch, fetchone=True)
+    
+    # Assert the returned data matches the expected dictionary structure
+    assert isinstance(created_user_data, dict)
+    # Compare essential fields
+    assert created_user_data["UserName"] == username
+    assert created_user_data.get("邮箱") is None or created_user_data.get("邮箱") == "" # Email is NULL/empty
+    assert created_user_data["Major"] == major
+    assert created_user_data["PhoneNumber"] == phone_number # Assert phone_number
+    # Compare UUID and datetime types (values might be mocked)
+    assert isinstance(created_user_data["UserID"], UUID)
+    assert isinstance(created_user_data["JoinTime"], datetime)
 
 @pytest.mark.asyncio
 async def test_create_user_duplicate_username(user_dal: UserDAL, mock_execute_query: AsyncMock):
-    username = "duplicate_user"
-    email = "some@example.com"
-    password_hash = "pass"
+    # Arrange
+    username = "existinguser_dal"
+    hashed_password = "hashed_password_def"
+    major = "History"
+    phone_number = "9998887777"
 
-    # Simulate the injected execute_query returning duplicate error
-    mock_execute_query.return_value = {'': '用户名已存在'}
+    # Simulate execute_query raising pyodbc.IntegrityError for duplicate username (from SP)
+    mock_execute_query.side_effect = pyodbc.IntegrityError("23000", "[DB-Lib][Error-Message] Duplicate username (SQLState: 23000)")
 
-    mock_conn = AsyncMock()
-    # user_dal fixture already provides the DAL instance with mocked execute_query
+    # Act & Assert
     with pytest.raises(IntegrityError, match="Username already exists."):
-        await user_dal.create_user(mock_conn, username, email, password_hash)
-
-    # Verify the injected execute_query was called
-    mock_execute_query.assert_called_once_with(
-        mock_conn,
-        "{CALL sp_CreateUser(?, ?, ?)}",
-        (username, email, password_hash),
-        fetchone=True
-    )
-
-@pytest.mark.asyncio
-async def test_create_user_duplicate_email(user_dal: UserDAL, mock_execute_query: AsyncMock):
-    username = "some_user"
-    email = "duplicate@example.com"
-    password_hash = "pass"
-
-    # Simulate the injected execute_query returning duplicate error
-    mock_execute_query.return_value = {'': '邮箱已存在'}
-
-    mock_conn = AsyncMock()
-    # user_dal fixture already provides the DAL instance with mocked execute_query
-    with pytest.raises(IntegrityError, match="Email already exists."):
-        await user_dal.create_user(mock_conn, username, email, password_hash)
-
-    # Verify the injected execute_query was called
-    mock_execute_query.assert_called_once_with(
-        mock_conn,
-        "{CALL sp_CreateUser(?, ?, ?)}",
-        (username, email, password_hash),
-        fetchone=True
-    )
+        await user_dal.create_user(mock_execute_query, username, hashed_password, phone_number, major=major)
 
 @pytest.mark.asyncio
 async def test_update_user_profile_success(user_dal: UserDAL, mock_execute_query: AsyncMock):
     user_id = UUID('12345678-1234-5678-1234-567812345678')
     new_major = "New Major"
     new_bio = "New Bio"
+    new_phone_number = "1112223333"
 
-    # Simulate the injected execute_query returning updated user profile
-    # The update_user_profile DAL method calls get_user_by_id internally, so mock the side_effect.
-    mock_execute_query.side_effect = [
-        { # First call for update_user_profile SP
-             '用户ID': user_id,
-             '用户名': "testuser",
-             '邮箱': "test@example.com",
-             '账户状态': "Active",
-             '信用分': 100,
-             '是否管理员': False,
-             '是否已认证': True,
-             '专业': new_major,
-             '头像URL': None,
-             '个人简介': new_bio,
-             '手机号码': None,
-             '注册时间': datetime.now()
-        },
-        # If the first call only returned success message and not the full profile,
-        # the DAL method calls get_user_by_id, which is also mocked by mock_execute_query.
-        # Add a mock return for get_user_by_id here if needed based on DAL logic flow.
-        # For now, assuming the first SP call is mocked to return the full profile.
-        { # Second call for get_user_by_id (fallback in DAL if SP doesn't return full profile)
-             '用户ID': user_id,
-             '用户名': "testuser", # Username remains the same
-             '邮箱': "test@example.com", # Email remains the same
-             '账户状态': "Active", # Status remains the same
-             '信用分': 100, # Credit remains the same
-             '是否管理员': False, # IsStaff remains the same
-             '是否已认证': True, # IsVerified remains the same
-             '专业': new_major, # Updated major
-             '头像URL': None, # Avatar URL remains None
-             '个人简介': new_bio, # Updated bio
-             '手机号码': None, # Phone number remains None
-             '注册时间': datetime.now() # Join time remains the same
-        }
-    ]
+    # Simulate the injected execute_query returning updated user profile directly from the SP call
+    mock_execute_query.return_value = {
+         'user_id': user_id,
+         'username': "testuser",
+         'email': "test@example.com",
+         'status': "Active",
+         'credit': 100,
+         'is_staff': False,
+         'is_verified': True,
+         'major': new_major,
+         'avatar_url': None,
+         'bio': new_bio,
+         'phone_number': new_phone_number,
+         'join_time': datetime.utcnow()
+    }
 
     mock_conn = AsyncMock()
-    # user_dal fixture already provides the DAL instance with mocked execute_query
-    updated_user = await user_dal.update_user_profile(mock_conn, user_id, major=new_major, bio=new_bio)
+    updated_user = await user_dal.update_user_profile(mock_conn, user_id, major=new_major, bio=new_bio, phone_number=new_phone_number)
 
     assert updated_user is not None
-    assert updated_user['专业'] == new_major
-    assert updated_user['个人简介'] == new_bio
-    # Verify the injected execute_query was called twice with correct arguments
-    assert mock_execute_query.call_count == 2
-    mock_execute_query.call_args_list[0].assert_called_with(
+    assert isinstance(updated_user, dict)
+    assert updated_user['major'] == new_major
+    assert updated_user['bio'] == new_bio
+    assert updated_user['phone_number'] == new_phone_number
+    assert updated_user['user_id'] == user_id
+
+    mock_execute_query.assert_called_once_with(
         mock_conn,
         "{CALL sp_UpdateUserProfile(?, ?, ?, ?, ?)}",
-        (user_id, new_major, None, new_bio, None),
-        fetchone=True
-    )
-    mock_execute_query.call_args_list[1].assert_called_with(
-        mock_conn,
-        "{CALL sp_GetUserProfileById(?)}",
-        (user_id,),
+        (user_id, new_major, None, new_bio, new_phone_number),
         fetchone=True
     )
 
@@ -348,15 +319,13 @@ async def test_update_user_profile_not_found(user_dal: UserDAL, mock_execute_que
     user_id = UUID('12345678-1234-5678-1234-567812345678')
     new_major = "New Major"
 
-    # Simulate the injected execute_query returning not found error
-    mock_execute_query.return_value = {'': '用户不存在。'}
+    # Simulate the injected execute_query returning not found error message from SP
+    mock_execute_query.return_value = {'': '用户未找到'}
 
     mock_conn = AsyncMock()
-    # user_dal fixture already provides the DAL instance with mocked execute_query
     with pytest.raises(NotFoundError, match=f"User with ID {user_id} not found for update."):
         await user_dal.update_user_profile(mock_conn, user_id, major=new_major)
 
-    # Verify the injected execute_query was called
     mock_execute_query.assert_called_once_with(
         mock_conn,
         "{CALL sp_UpdateUserProfile(?, ?, ?, ?, ?)}",
@@ -369,15 +338,13 @@ async def test_update_user_profile_duplicate_phone(user_dal: UserDAL, mock_execu
     user_id = UUID('12345678-1234-5678-1234-567812345678')
     phone_number = "1234567890"
 
-    # Simulate the injected execute_query returning duplicate error
-    mock_execute_query.return_value = {'': '此手机号码已被其他用户使用。'}
+    # Simulate the injected execute_query returning duplicate phone error message from SP
+    mock_execute_query.return_value = {'': '手机号码已存在'}
 
     mock_conn = AsyncMock()
-    # user_dal fixture already provides the DAL instance with mocked execute_query
     with pytest.raises(IntegrityError, match="Phone number already in use by another user."):
         await user_dal.update_user_profile(mock_conn, user_id, phone_number=phone_number)
 
-    # Verify the injected execute_query was called
     mock_execute_query.assert_called_once_with(
         mock_conn,
         "{CALL sp_UpdateUserProfile(?, ?, ?, ?, ?)}",

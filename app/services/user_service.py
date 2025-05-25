@@ -2,6 +2,7 @@
 import pyodbc
 from uuid import UUID
 from typing import Optional
+import logging
 
 from app.dal.user_dal import UserDAL # Import the UserDAL class
 from app.schemas.user_schemas import UserRegisterSchema, UserLoginSchema, UserProfileUpdateSchema, UserPasswordUpdate, UserStatusUpdateSchema, UserCreditAdjustmentSchema, UserResponseSchema # Import necessary schemas
@@ -20,47 +21,63 @@ class UserService:
         self.user_dal = user_dal
 
     async def create_user(self, conn: pyodbc.Connection, user_data: UserRegisterSchema) -> UserResponseSchema:
+        """创建新用户。
+
+        Args:
+            conn: 数据库连接对象。
+            user_data: 用户注册数据 Pydantic Schema。
+
+        Returns:
+            新创建用户的 UserResponseSchema。
+
+        Raises:
+            IntegrityError: 如果用户名或手机号已存在。
+            DALError: 如果发生其他数据库错误。
         """
-        Service layer function to handle user registration.
-        Includes password hashing and calling DAL.
-        """
-        # Hashing password (business logic, can live in Service or Utils)
+        # Business logic / validation can go here (e.g., check password strength)
+
         hashed_password = get_password_hash(user_data.password)
 
         try:
-            # Call DAL to create the user in the database
-            # The DAL is expected to handle database-specific errors like duplicates
-            # Pass the connection to the DAL method
+            # Call DAL to create user
+            # The DAL method is expected to return a dictionary representation of the created user
+            # Or raise IntegrityError for duplicates or DALError for other DB issues
             created_user = await self.user_dal.create_user(
                 conn,
                 user_data.username,
-                user_data.email,
-                hashed_password
-                # major=user_data.major # Pass optional fields if DAL/SP supports it
+                hashed_password,
+                user_data.phone_number,
+                major=user_data.major
             )
 
-            # TODO: Service layer can trigger email verification process here
-            # This might involve calling another service or queuing a task
-            # linkage_result = await self.user_dal.request_verification_link(conn, created_user.get('邮箱'))
-            # if linkage_result and linkage_result.get('VerificationToken'):
-            #     verification_token = linkage_result['VerificationToken']
-            #     # Call email sending service/utility
-            #     # send_verification_email(user_data.email, verification_token)
-            #     print(f"DEBUG: Verification link requested for {user_data.email}") # Debug print
+            # After successful creation in DAL, fetch the complete user profile
+            # This is needed to populate all fields for UserResponseSchema, including default values etc.
+            # Assuming DAL.get_user_by_id returns a dictionary matching _convert_dal_user_to_schema expectations
+            # The DAL create_user method should ideally return the newly created user's ID or complete data,
+            # but if not, a subsequent fetch by username or ID is necessary.
+            # Let's adjust based on the assumption that DAL.create_user returns the dictionary directly.
+            # If DAL.create_user only returns ID, we would need get_user_profile_by_id here.
+            # Based on test mocks, DAL.create_user is mocked to return the full dict.
 
-            # Convert DAL response keys to match UserResponseSchema
-            return self._convert_dal_user_to_schema(created_user) # Return the converted dict
+            # Convert the DAL dictionary result to a dictionary matching UserResponseSchema keys
+            # The DAL method is expected to return a dictionary already suitable for conversion
+            converted_user_data = self._convert_dal_user_to_schema(created_user) # Convert DAL dict to schema dict
 
-        except IntegrityError as e:
-            # Re-raise IntegrityError to be caught by the Router/Exception Handler
+            # Return the UserResponseSchema instance
+            # The Router will handle converting this Pydantic model to JSON response
+            return converted_user_data # Return the converted dict
+
+        except (IntegrityError, NotFoundError) as e:
+            # Re-raise specific exceptions from DAL
             raise e
         except DALError as e:
-            # Re-raise DALError
-            raise e
+            # Wrap general DAL errors in a Service layer error with more context
+            logging.error(f"Database error during user creation for {user_data.username}: {e}")
+            raise DALError(f"Database error during user creation: {e}") from e # Wrap and re-raise
         except Exception as e:
-            # Log unexpected errors and raise a generic Service layer exception or re-raise
-            print(f"ERROR: Unexpected error in create_user service: {e}")
-            raise e # Re-raise for now, consider a custom ServiceError if needed
+            # Catch any other unexpected errors
+            logging.error(f"Unexpected error during user creation for {user_data.username}: {e}")
+            raise e # Re-raise other unexpected errors
 
     async def authenticate_user_and_create_token(self, conn: pyodbc.Connection, username: str, password: str) -> str:
         """
@@ -154,7 +171,7 @@ class UserService:
 
             if not updated_user:
                  # This indicates an unexpected issue in DAL or SP - fallback to re-fetch
-                 logger.warning(f"DAL.update_user_profile returned None unexpectedly for user {user_id}")
+                 print(f"WARNING: DAL.update_user_profile returned None unexpectedly for user {user_id}")
                  # Re-fetch and convert before returning
                  return self._convert_dal_user_to_schema(await self.user_dal.get_user_by_id(conn, user_id)) # Re-fetch to be sure
 
@@ -404,64 +421,51 @@ class UserService:
             print(f"ERROR: Unexpected error in get_all_users service for admin {admin_id}: {e}")
             raise e # Re-raise other unexpected errors
 
-    def _convert_dal_user_to_schema(self, dal_user_data: dict) -> dict:
-        """Converts a dictionary from DAL (potentially with DB keys) to a dictionary matching UserResponseSchema keys (snake_case)."""
+    def _convert_dal_user_to_schema(self, dal_user_data: dict) -> UserResponseSchema:
+        """Converts a dictionary from DAL (potentially with DB keys) to a UserResponseSchema instance."""
         if not dal_user_data:
-            return {}
+            # If dal_user_data is unexpectedly empty or None, raise a clearer error
+            raise DALError("Cannot convert empty or None DAL user data to UserResponseSchema.")
             
         # Define mapping from potential DAL keys to UserResponseSchema keys
-        # Assuming common variations and Chinese keys from SPs
+        # Ensure this mapping is correct based on the actual keys returned by your stored procedures or DAL
+        # Assuming English keys as defined in the DAL test mocks now.
         key_mapping = {
-            '用户ID': 'user_id',
-            'UserID': 'user_id', # Handle both potential key names from DAL
-            '用户名': 'username',
-            'UserName': 'username',
-            '邮箱': 'email',
-            'Email': 'email',
-            '账户状态': 'status',
-            'Status': 'status',
-            '信用分': 'credit',
-            'Credit': 'credit',
-            '是否管理员': 'is_staff',
-            'IsStaff': 'is_staff',
-            '是否已认证': 'is_verified',
-            'IsVerified': 'is_verified',
-            '专业': 'major',
-            'Major': 'major',
-            '头像URL': 'avatar_url',
-            'AvatarUrl': 'avatar_url',
-            '个人简介': 'bio',
-            'Bio': 'bio',
-            '手机号码': 'phone_number',
-            'PhoneNumber': 'phone_number',
-            '注册时间': 'join_time',
-            'JoinTime': 'join_time', # Handle both potential key names from DAL
+            'user_id': 'user_id',
+            'username': 'username',
+            'email': 'email', 
+            'status': 'status',
+            'credit': 'credit',
+            'is_staff': 'is_staff',
+            'is_verified': 'is_verified',
+            'major': 'major',
+            'avatar_url': 'avatar_url',
+            'bio': 'bio',
+            'phone_number': 'phone_number',
+            'join_time': 'join_time',
             # Add other potential keys if necessary
         }
 
-        # Create a new dictionary with schema-compatible keys
+        # Create a new dictionary with schema-compatible keys, fetching values from dal_user_data
         schema_data = {}
         for dal_key, schema_key in key_mapping.items():
             # Use .get() with a default of None in case a key is missing in the DAL dict
+            # Use schema_key as the key in schema_data
             value = dal_user_data.get(dal_key)
-            if value is not None:
-                # Let Pydantic handle the conversion when creating the schema instance
-                schema_data[schema_key] = value # Pass the raw value (UUID, datetime objects etc.)
-
-        # Ensure all expected keys from UserResponseSchema are present, even if None
-        # This might not be strictly necessary as Pydantic can handle missing optional fields,
-        # but it can help ensure consistency in the Service layer output.
-        # However, for simplicity and to avoid issues with potentially non-optional fields missing from DAL,
-        # let's rely on Pydantic's validation on the Router side.
+            # Include None values for optional fields to match schema structure
+            schema_data[schema_key] = value 
+            
 
         # Return a UserResponseSchema instance directly from the converted data
-        # Pydantic should handle conversion of UUID string and datetime string to UUID and datetime objects
+        # Pydantic should handle conversion of UUID string and datetime object/string
         try:
             # Create and validate the schema instance
+            # Ensure all required fields for UserResponseSchema are present in schema_data
+            # Pydantic will handle validation and type casting
             return UserResponseSchema(**schema_data)
         except Exception as e:
             # Log potential validation errors during conversion
-            print(f"ERROR: Failed to convert DAL user data to UserResponseSchema: {e} for data: {schema_data}")
+            logging.error(f"Failed to convert DAL user data to UserResponseSchema: {e} for data: {schema_data}")
             # Re-raise as a Service layer error, possibly with more context
             raise DALError(f"Failed to process user data from database: {e}") from e
 

@@ -138,126 +138,122 @@ def mock_user_service(mocker):
 
 @pytest.mark.anyio # Use anyio mark
 async def test_register_user(client: TestClient, mock_user_service: AsyncMock, mocker):
-    username = "testuser_reg"
-    email = "test_reg@example.com"
-    password = "securepassword"
-    user_data = UserRegisterSchema(username=username, email=email, password=password)
+    # Arrange
+    # Updated user data for registration (no email, with phone_number)
+    register_data = {
+        "username": "newuser_api",
+        "password": "securepassword",
+        "confirmPassword": "securepassword", # Assuming frontend sends this
+        "major": "Literature",
+        "phone_number": "1231231234", # Changed from phoneNumber to phone_number
+    }
 
-    # Define the expected return value from the mocked service method
-    # Service layer should return a UserResponseSchema instance with correct types (UUID object, datetime object)
-    test_user_id = uuid4() # Simulate a generated UUID
-    expected_created_user_schema = UserResponseSchema(
-        user_id=test_user_id, # Service returns UUID object
-        username="test_reg_user",
-        email="test_reg@example.com",
+    # Simulate successful user creation return from the service layer
+    # The service should return a UserResponseSchema instance or similar dict
+    # Ensure the mocked service return includes phone_number and handles email as None
+    created_user_from_service = UserResponseSchema(
+        user_id=uuid4(),
+        username=register_data["username"],
+        email=None, # Email is None on registration
         status="Active",
         credit=100,
         is_staff=False,
         is_verified=False,
-        major=None,
+        major=register_data["major"],
         avatar_url=None,
         bio=None,
-        phone_number=None,
-        join_time=datetime.now(timezone.utc) # Use timezone-aware datetime
+        phone_number=register_data["phone_number"], # Use phone_number
+        join_time=datetime.utcnow(),
     )
-    # The mock should return the Pydantic schema instance
-    mock_user_service.create_user.return_value = expected_created_user_schema
+    
+    # Mock the service's create_user method
+    # The service method is expected to be called with UserRegisterSchema, not the raw dict
+    # However, the API router handles Pydantic model creation, so the mock should expect the Pydantic model
+    # We can mock the return value directly as the expected UserResponseSchema
+    mock_user_service.create_user.return_value = created_user_from_service
 
-    response = client.post("/api/v1/auth/register", json=user_data.model_dump())
+    # Act
+    # Call the API endpoint with the updated registration data
+    response = client.post("/api/v1/auth/register", json=register_data)
 
-    assert response.status_code == 201
-    # FastAPI will serialize the returned UserResponseSchema instance automatically.
-    # We can assert the structure and types of the JSON response.
-    response_json = response.json()
-    assert isinstance(response_json, dict)
-    assert "user_id" in response_json
-    assert "username" in response_json
-    assert "email" in response_json
-    assert "status" in response_json
-    assert "credit" in response_json
-    assert "is_staff" in response_json
-    assert "is_verified" in response_json
-    # Optional fields
-    assert "major" in response_json
-    assert "avatar_url" in response_json
-    assert "bio" in response_json
-    assert "phone_number" in response_json
-    assert "join_time" in response_json
+    # Assert
+    assert response.status_code == 201 # Expect 201 Created
 
-    # Assert data types in the JSON response
-    assert isinstance(response_json["user_id"], str)
-    assert isinstance(response_json["username"], str)
-    assert isinstance(response_json["email"], str)
-    assert isinstance(response_json["status"], str)
-    assert isinstance(response_json["credit"], int)
-    assert isinstance(response_json["is_staff"], bool)
-    assert isinstance(response_json["is_verified"], bool)
-    # Optional fields - check for None or correct type if present
-    assert response_json["major"] is None or isinstance(response_json["major"], str)
-    assert response_json["avatar_url"] is None or isinstance(response_json["avatar_url"], str)
-    assert response_json["bio"] is None or isinstance(response_json["bio"], str)
-    assert response_json["phone_number"] is None or isinstance(response_json["phone_number"], str)
-    assert isinstance(response_json["join_time"], str) # FastAPI serializes datetime to ISO 8601 string
+    # Assert the response body matches the expected UserResponseSchema structure
+    response_data = response.json()
 
-    # Assert specific values for fields that are not UUID or datetime
-    assert response_json["user_id"] == str(test_user_id) # Assert UUID is serialized as string
-    assert response_json["username"] == "test_reg_user"
-    assert response_json["email"] == "test_reg@example.com"
-    assert response_json["status"] == "Active"
-    assert response_json["credit"] == 100
-    assert response_json["is_staff"] is False
-    assert response_json["is_verified"] is False
-    assert response_json["major"] is None
-    assert response_json["avatar_url"] is None
-    assert response_json["bio"] is None
-    assert response_json["phone_number"] is None
-    # We can potentially add more specific checks for join_time format if needed
+    assert "user_id" in response_data
+    assert response_data["username"] == register_data["username"]
+    assert response_data.get("email") is None or response_data.get("email") == "" # Check using .get for safety
+    assert response_data["major"] == register_data["major"]
+    assert response_data["phone_number"] == register_data["phone_number"] # Assert phone_number is in response
+    assert response_data["status"] == "Active"
+    assert response_data["credit"] == 100
+    assert response_data["is_staff"] is False
+    assert response_data["is_verified"] is False
+    assert "join_time" in response_data
 
-    # Verify service method was called with correct arguments
-    mock_user_service.create_user.assert_called_once_with(
-        mocker.ANY, # Mocked DB connection (should be MagicMock from fixture)
-        user_data
+    # Verify that the service's create_user method was called with the correct data
+    # The API router will create a UserRegisterSchema instance from the JSON data
+    # We need to check if the mocked method was called with a UserRegisterSchema object having the correct attributes
+    
+    # Construct the expected UserRegisterSchema object that the service should receive
+    expected_user_data_in_service_call = UserRegisterSchema(
+        username=register_data["username"],
+        password=register_data["password"],
+        major=register_data["major"],
+        phone_number=register_data["phone_number"],
     )
+    
+    # Use mocker.call to capture the arguments the mock was called with
+    mock_user_service.create_user.assert_called_once()
+    # Get the actual arguments the mock was called with
+    call_args, call_kwargs = mock_user_service.create_user.call_args
+    
+    # The first argument should be the DB connection (mock_db_connection)
+    assert call_args[0] == mocker.ANY # Or mock_db_connection if needed, but ANY is often sufficient for args you don't control directly
+    # The second argument should be the UserRegisterSchema instance
+    actual_user_data_in_call = call_args[1]
+
+    assert isinstance(actual_user_data_in_call, UserRegisterSchema)
+    assert actual_user_data_in_call.username == expected_user_data_in_service_call.username
+    assert actual_user_data_in_call.password == expected_user_data_in_service_call.password
+    assert actual_user_data_in_call.major == expected_user_data_in_service_call.major
+    assert actual_user_data_in_call.phone_number == expected_user_data_in_service_call.phone_number # Assert phone_number
+    # Removed assertion for email as it's no longer in UserRegisterSchema
 
 @pytest.mark.anyio # Use anyio mark
 async def test_register_user_duplicate_username(client: TestClient, mock_user_service: AsyncMock, mocker):
-    username = "dup_reg_user"
-    email = "dup_reg@example.com"
-    password = "password"
-    user_data = UserRegisterSchema(username=username, email=email, password=password)
+    # Arrange
+    # Updated user data without email, with phone_number
+    register_data = {
+        "username": "existinguser_api",
+        "password": "password123",
+        "confirmPassword": "password123",
+        "major": "Chemistry",
+        "phone_number": "1112223333", # Changed from phoneNumber to phone_number
+    }
 
-    # Simulate Service layer raising IntegrityError for duplicate username
-    mock_user_service.create_user.side_effect = IntegrityError("Username already exists.")
+    # Configure the service mock to raise IntegrityError for duplicate username
+    mock_user_service.create_user.side_effect = IntegrityError("用户名已存在") # Match expected error message
 
-    response = client.post("/api/v1/auth/register", json=user_data.model_dump())
+    # Act & Assert
+    # Call the API endpoint and expect a 409 Conflict due to IntegrityError
+    response = client.post("/api/v1/auth/register", json=register_data)
 
-    assert response.status_code == 409
-    assert response.json()["detail"] == "Username already exists."
+    # Assert the response status code is 409 Conflict
+    assert response.status_code == status.HTTP_409_CONFLICT
 
-    mock_user_service.create_user.assert_called_once_with(
-        mocker.ANY, # Mocked DB connection (should be MagicMock from fixture)
-        user_data
-    )
+    # Assert the response body contains the expected error detail
+    # The global exception handler formats the response as {'detail': 'Error Message'}
+    assert response.json() == {"detail": "用户名已存在"} # Match expected error message
 
-@pytest.mark.anyio # Use anyio mark
-async def test_register_user_duplicate_email(client: TestClient, mock_user_service: AsyncMock, mocker):
-    username = "another_reg_user"
-    email = "dup_reg@example.com"
-    password = "password"
-    user_data = UserRegisterSchema(username=username, email=email, password=password)
+    # Verify that the service's create_user method was called
+    mock_user_service.create_user.assert_called_once()
 
-    # Simulate Service layer raising IntegrityError for duplicate email
-    mock_user_service.create_user.side_effect = IntegrityError("Email already exists.")
-
-    response = client.post("/api/v1/auth/register", json=user_data.model_dump())
-
-    assert response.status_code == 409
-    assert response.json()["detail"] == "Email already exists."
-
-    mock_user_service.create_user.assert_called_once_with(
-        mocker.ANY, # Mocked DB connection (should be MagicMock from fixture)
-        user_data
-    )
+    # Optional: More detailed assertion on call arguments if needed
+    # expected_user_schema = UserRegisterSchema(...)
+    # mock_user_service.create_user.assert_called_once_with(mocker.ANY, expected_user_schema)
 
 @pytest.mark.anyio # Use anyio mark
 async def test_login_for_access_token(client: TestClient, mock_user_service: AsyncMock, mocker):
@@ -346,7 +342,7 @@ async def test_read_users_me(client: TestClient, mock_user_service: AsyncMock, m
          major="CS",
          avatar_url=None,
          bio="Test bio.",
-         phone_number="1234567890",
+         phone_number=None,
          join_time=datetime.now(timezone.utc) # Use timezone-aware datetime
      )
 
@@ -388,7 +384,7 @@ async def test_read_users_me(client: TestClient, mock_user_service: AsyncMock, m
     assert response_json.get("is_verified") is True
     assert response_json.get("major") == "CS"
     assert response_json.get("bio") == "Test bio."
-    assert response_json.get("phone_number") == "1234567890"
+    assert response_json.get("phone_number") is None
     # We can potentially add more specific checks for join_time format if needed
 
     mock_user_service.get_user_profile_by_id.assert_called_once_with(

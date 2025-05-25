@@ -7,9 +7,9 @@ from datetime import datetime # Import datetime for UserResponseSchema
 # Renamed from UserCreate to UserRegisterSchema as per plan
 class UserRegisterSchema(BaseModel):
     username: str = Field(..., min_length=3, max_length=128, description="用户名")
-    email: EmailStr = Field(..., description="邮箱")
     password: str = Field(..., min_length=6, description="密码") # Password hashing handled in Service layer
     major: Optional[str] = Field(None, max_length=100, description="专业")
+    phone_number: str = Field(..., max_length=20, description="手机号码")
     # is_staff field should not be provided by the user on registration
 
 # Properties to receive via API on login
@@ -40,7 +40,7 @@ class UserPasswordUpdate(BaseModel):
 class UserResponseSchema(BaseModel):
     user_id: UUID = Field(..., description="用户唯一ID")
     username: str = Field(..., description="用户名")
-    email: str = Field(..., description="邮箱") # 可以选择性隐藏部分邮箱信息
+    email: Optional[str] = Field(None, description="邮箱") # 邮箱改为可选，并允许 None
     status: str = Field(..., description="账户状态")
     credit: int = Field(..., description="信用分")
     is_staff: bool = Field(..., description="是否管理员")
@@ -48,7 +48,7 @@ class UserResponseSchema(BaseModel):
     major: Optional[str] = Field(None, description="专业")
     avatar_url: Optional[str] = Field(None, description="头像URL")
     bio: Optional[str] = Field(None, description="个人简介")
-    phone_number: Optional[str] = Field(None, description="手机号码") # 可以选择性隐藏部分手机号信息
+    phone_number: Optional[str] = Field(None, description="手机号码") # 手机号改为可选
     join_time: datetime = Field(..., description="注册时间 (ISO 8601格式)") # Use datetime object
 
     class Config:
