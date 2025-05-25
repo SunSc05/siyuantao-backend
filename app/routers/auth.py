@@ -19,6 +19,9 @@ from app.exceptions import AuthenticationError, ForbiddenError, IntegrityError, 
 
 from fastapi.security import OAuth2PasswordRequestForm # Import OAuth2PasswordRequestForm
 
+import logging # Import logging
+logger = logging.getLogger(__name__) # Get logger instance
+
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
 @router.post("/register", response_model=UserResponseSchema, status_code=status.HTTP_201_CREATED)
@@ -30,17 +33,22 @@ async def register(
     """
     新用户注册。
     """
+    logger.info(f"API: Received registration request for username: {user_data.username}") # Add logging
     try:
         # Call Service layer function, passing the connection
         created_user = await user_service.create_user(conn, user_data)
+        logger.info(f"API: User {user_data.username} registered successfully. User ID: {created_user.user_id}") # Add logging
         return created_user
     except IntegrityError as e:
+        logger.warning(f"API: Registration failed for {user_data.username} due to integrity error: {e}") # Add logging
         # Catch specific DAL errors and convert to HTTP exceptions
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
     except DALError as e:
+        logger.error(f"API: Registration failed for {user_data.username} due to DAL error: {e}") # Add logging
         # Catch other DAL errors
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"数据库操作失败: {e}")
     except Exception as e:
+        logger.error(f"API: Registration failed for {user_data.username} due to unexpected error: {e}", exc_info=True) # Add logging with exc_info
         # Catch any other unexpected errors
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"服务器内部错误: {e}")
 
@@ -53,6 +61,7 @@ async def login(
     """
     用户登录并获取 JWT Token。
     """
+    logger.info(f"API: Received login request for username: {form_data.username}") # Add logging
     try:
         # Call Service layer function, passing the connection
         # Service returns the access token string
@@ -62,14 +71,17 @@ async def login(
         # If it returns None or similar on failure, handle that case
         if not access_token_string:
              # This case might be covered by exceptions from Service, but as a safeguard
+             logger.warning(f"API: Login failed for {form_data.username}: Service returned no token.") # Add logging
              raise HTTPException(
                  status_code=status.HTTP_401_UNAUTHORIZED,
                  detail="用户名或密码不正确",
                  headers={"WWW-Authenticate": "Bearer"},
              )
 
+        logger.info(f"API: Login successful for user: {form_data.username}") # Add logging
         return {"access_token": access_token_string, "token_type": "bearer"}
     except (AuthenticationError, ForbiddenError) as e:
+         logger.warning(f"API: Login failed for {form_data.username} due to auth/forbidden error: {e}") # Add logging
          # Catch authentication and forbidden errors from Service
          raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED if isinstance(e, AuthenticationError) else status.HTTP_403_FORBIDDEN,
@@ -77,9 +89,11 @@ async def login(
             headers={"WWW-Authenticate": "Bearer"} if isinstance(e, AuthenticationError) else None
         )
     except DALError as e:
+        logger.error(f"API: Login failed for {form_data.username} due to DAL error: {e}") # Add logging
         # Catch DAL errors
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"数据库操作失败: {e}")
     except Exception as e:
+        logger.error(f"API: Login failed for {form_data.username} due to unexpected error: {e}", exc_info=True) # Add logging with exc_info
         # Catch any other unexpected errors
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"服务器内部错误: {e}")
 

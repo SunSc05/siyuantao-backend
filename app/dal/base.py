@@ -78,21 +78,24 @@ async def execute_query(
     except pyodbc.Error as e:
         # 根据 pyodbc 错误信息判断并抛出自定义异常
         error_message = str(e)
-        # 重新评估错误信息的匹配逻辑，确保能捕捉到存储过程中的 RAISERROR 消息
-        # 注意：这里需要根据您的 SQL Server 配置和驱动，确定 RAISERROR 消息如何体现在 pyodbc.Error 中
-        # 如果简单的字符串匹配不够，可能需要解析更详细的错误信息（如 SQLSTATE 或 Native Error Code）
-        # 目前先保留基于字符串的匹配，但这可能是潜在的不稳定性来源
-        if '用户不存在' in error_message or '找不到' in error_message:
-             raise NotFoundError(error_message) from e
-        elif '已存在' in error_message or '重复' in error_message:
-             raise IntegrityError(error_message) from e
-        elif '无权限' in error_message or '管理员' in error_message:
-             raise ForbiddenError(error_message) from e
-        elif '无效的' in error_message or '必须提供' in error_message:
-             raise DALError(error_message) from e # 映射为 DALError
+        error_message_lower = error_message.lower()
+        
+        # 检查存储过程的 RAISERROR 消息
+        if '用户名已存在' in error_message or 'duplicate username' in error_message_lower:
+            raise IntegrityError("Username already exists.") from e
+        elif '手机号已存在' in error_message or 'duplicate phone' in error_message_lower:
+            raise IntegrityError("Phone number already exists.") from e
+        elif '用户不存在' in error_message or 'not found' in error_message_lower:
+            raise NotFoundError(error_message) from e
+        elif '无权限' in error_message or 'permission denied' in error_message_lower:
+            raise ForbiddenError(error_message) from e
+        elif '无效的' in error_message or 'invalid' in error_message_lower:
+            raise DALError(error_message) from e
+        elif '违反唯一约束' in error_message or 'unique constraint' in error_message_lower:
+            raise IntegrityError(error_message) from e
         else:
-             logger.error(f"Database error executing SQL: {sql} - {e}")
-             raise DALError(f"Database operation failed: {e}") from e
+            logger.error(f"Database error executing SQL: {sql} - {e}")
+            raise DALError(f"Database operation failed: {e}") from e
 
     except Exception as e:
         # 捕获其他意外异常
@@ -109,10 +112,7 @@ async def execute_query(
         
 # TODO: Transaction context manager might also need similar async/sync handling
 
-# 事务上下文管理器 (可选但推荐，用于涉及多个 DAL 操作的原子性)
-# async with transaction(conn):
-#     await dal_op1(conn)
-#     await dal_op2(conn)
+# 事务上下文管理器 (用于涉及多个 DAL 操作的原子性)
 from contextlib import asynccontextmanager
 def transaction(conn: pyodbc.Connection):
     @asynccontextmanager

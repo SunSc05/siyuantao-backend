@@ -15,6 +15,9 @@ from app.services.user_service import UserService # 导入UserService
 from app.dal.base import execute_query # Import execute_query from base.py
 # from app.utils.auth import verify_password, get_password_hash, create_access_token # 如果需要在这里处理token，需要导入
 
+import logging # Import logging
+logger = logging.getLogger(__name__) # Get logger instance
+
 # Instantiate DAL and Service (consider dependency injection container for larger apps)
 # 注意：这里的实例化UserDAL和UserService可能需要在获取数据库连接后再进行
 # user_dal_instance = UserDAL()
@@ -39,10 +42,14 @@ from app.dal.base import execute_query # Import execute_query from base.py
 # Inject execute_query into UserDAL when creating UserService
 async def get_user_service() -> UserService: # No longer needs conn here
     """Dependency injector for UserService, injecting UserDAL with execute_query."""
+    logger.debug("Attempting to get UserService instance.") # Add logging
     # Instantiate UserDAL, injecting the execute_query function
     user_dal_instance = UserDAL(execute_query_func=execute_query)
+    logger.debug("UserDAL instance created.") # Add logging
     # Instantiate UserService, injecting the UserDAL instance
-    return UserService(user_dal=user_dal_instance) 
+    service = UserService(user_dal=user_dal_instance)
+    logger.debug("UserService instance created.") # Add logging
+    return service # Return the UserService instance
 
 # 从配置文件获取 JWT 密钥和算法
 SECRET_KEY = settings.SECRET_KEY # Assumes settings is imported

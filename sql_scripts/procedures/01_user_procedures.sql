@@ -119,7 +119,7 @@ BEGIN
         -- END
 
         -- 插入新用户数据
-        INSERT INTO [User] (UserID, UserName, PasswordHash, Email, Status, Credit, IsStaff, IsVerified, Major, AvatarUrl, Bio, PhoneNumber, JoinTime)
+        INSERT INTO [User] (UserID, UserName, Password, Email, Status, Credit, IsStaff, IsVerified, Major, AvatarUrl, Bio, PhoneNumber, JoinTime)
         VALUES (@newUserId, @username, @passwordHash, NULL, 'Active', 100, 0, 0, @major, NULL, NULL, @phoneNumber, GETDATE()); -- Email 设置为 NULL
 
         -- 提交事务
@@ -135,6 +135,8 @@ BEGIN
 
         -- 重新抛出错误
         THROW;
+
+        SELECT ERROR_MESSAGE() AS ErrorMsg;
     END CATCH
 END;
 GO

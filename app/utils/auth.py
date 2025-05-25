@@ -16,7 +16,7 @@ SECRET_KEY = settings.SECRET_KEY
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30 # 访问令牌过期时间（分钟）
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/users/login") # 指向登录API端点
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login") # 指向登录API端点
 
 # 密码哈希（使用 passlib 库，需要在 requirements.txt 中添加）
 # from passlib.context import CryptContext

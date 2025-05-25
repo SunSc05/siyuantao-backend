@@ -18,6 +18,14 @@ import uuid
 # 导入 dotenv 来加载 .env 文件
 from dotenv import load_dotenv
 
+# 导入 dictConfig
+from logging.config import dictConfig
+# Import Uvicorn logging formatters for consistency if needed
+try:
+    import uvicorn.logging
+except ImportError:
+    uvicorn = None # Handle case where uvicorn might not be installed in this env
+
 # 加载 .env 文件中的环境变量
 # 如果 .env 文件不在当前工作目录，需要指定路径
 load_dotenv()
@@ -35,15 +43,72 @@ if not os.path.exists(log_dir_abs):
 
 log_file_path = os.path.join(log_dir_abs, f"sql_deploy_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler(log_file_path),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
+# Define a comprehensive logging configuration dictionary using dictConfig
+# This configuration is for the db_init.py script itself.
+# For FastAPI/Uvicorn, a similar configuration would be needed in the main application entry point.
+LOGGING_CONFIG = {
+    "version": 1,
+    "disable_existing_loggers": False, # Crucial: Prevents potential silencing by other configs (though less likely for a script)
+    "formatters": {
+        "default": { # Formatter for general application logs
+            # Use Uvicorn's formatter if available, otherwise use a basic one
+            "()": "uvicorn.logging.DefaultFormatter" if uvicorn and hasattr(uvicorn.logging, "DefaultFormatter") else "logging.Formatter",
+            "fmt": "%(levelprefix)s %(asctime)s | %(name)s | %(message)s",
+            "datefmt": "%Y-%m-%d %H:%M:%S",
+            "use_colors": True if uvicorn and hasattr(uvicorn.logging, "DefaultFormatter") else False, # Use colors if using uvicorn formatter
+        },
+        # Add access formatter if needed, though less relevant for a script
+        # "access": {
+        #     "()": "uvicorn.logging.AccessFormatter",
+        #     "fmt": '%(levelprefix)s %(asctime)s | %(name)s | %(client_addr)s - "%(request_line)s" %(status_code)s',
+        #     "datefmt": "%Y-%m-%d %H:%M:%S",
+        # },
+    },
+    "handlers": {
+        "default": { # Handler for general logs (e.g., to stderr)
+            "formatter": "default",
+            "class": "logging.StreamHandler",
+            "stream": "ext://sys.stderr", # Directs to standard error stream
+        },
+        "file": { # Handler to write logs to a file
+            "formatter": "default",
+            "class": "logging.FileHandler",
+            "filename": log_file_path,
+            "encoding": "utf-8",
+        },
+        # Add access handler if needed
+        # "access": {
+        #     "formatter": "access",
+        #     "class": "logging.StreamHandler",
+        #     "stream": "ext://sys.stdout",
+        # },
+    },
+    "loggers": {
+        "": { # Root logger: catches logs from any unconfigured logger (like the ones from pyodbc)
+            "handlers": ["default", "file"], # Send root logs to both console and file
+            "level": "INFO", # Default level for unconfigured loggers
+            "propagate": False, # Root logger does not propagate further
+        },
+        "db_init": { # Logger specifically for this script
+             "handlers": ["default", "file"],
+             "level": "DEBUG", # Set this script's logger to DEBUG for verbose output
+             "propagate": False,
+        },
+        # You might define loggers for backend modules here if this was the main logging config file
+        # e.g., "app": {"handlers": ["default", "file"], "level": "DEBUG", "propagate": False},
+        # "app.services": {"handlers": ["default", "file"], "level": "DEBUG", "propagate": False},
+        # "app.dal": {"handlers": ["default", "file"], "level": "DEBUG", "propagate": False},
+        # Add Uvicorn loggers if this was the main app config
+        # "uvicorn.error": {"level": "INFO", "handlers": ["default"], "propagate": False},
+        # "uvicorn.access": {"level": "INFO", "handlers": ["access"], "propagate": False},
+    },
+}
+
+# Apply the configuration
+dictConfig(LOGGING_CONFIG)
+
+# Get the logger for this script
+logger = logging.getLogger("db_init")
 
 def get_db_connection(db_name_override=None):
     """获取数据库连接, 如果指定的数据库不存在则尝试创建它。"""
@@ -74,6 +139,12 @@ def get_db_connection(db_name_override=None):
         # For CREATE DATABASE, it's often better to have autocommit=True for this specific connection
         master_conn = pyodbc.connect(master_conn_str, autocommit=True)
         cursor = master_conn.cursor()
+        
+        # Add: Drop the database if it already exists
+        logger.info(f"Attempting to drop existing database '{target_db_name}' if it exists.")
+        cursor.execute(f"DROP DATABASE IF EXISTS [{target_db_name}];")
+        logger.info(f"DROP DATABASE IF EXISTS [{target_db_name}] executed.")
+        time.sleep(1) # Give the system a moment
         
         # Check if the target database exists
         cursor.execute("SELECT name FROM sys.databases WHERE name = ?", (target_db_name,))
