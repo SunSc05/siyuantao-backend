@@ -13,14 +13,18 @@ CREATE TABLE [User] (
     [IsStaff] BIT NOT NULL DEFAULT 0,                       -- 是否为平台管理员：0=普通用户，1=管理员，默认为0
     [IsVerified] BIT NOT NULL DEFAULT 0,                    -- 校园身份是否已通过邮箱认证：0=未认证，1=已认证，默认为0 (通过邮箱魔术链接认证)
     [Major] NVARCHAR(100) NULL,                             -- 用户专业信息，可为空
-    [Email] NVARCHAR(254) NULL UNIQUE,                  -- 用户认证邮箱，可以为空但认证后必须唯一（作为魔术链接认证的依据）
+    [Email] NVARCHAR(254) NULL,                  -- 用户认证邮箱，可以为空但认证后必须唯一（不能使用标准的唯一约束，标准唯一约束不允许重复的NULL值,修改为使用一个筛选的唯一索引。作为魔术链接认证的依据）
     [AvatarUrl] NVARCHAR(255) NULL,                         -- 用户头像图片URL，可为空
     [Bio] NVARCHAR(500) NULL,                               -- 用户个人简介，可为空
     [PhoneNumber] NVARCHAR(20) NULL UNIQUE,                 -- 用户手机号码，允许为空但如果填写则必须唯一
     [JoinTime] DATETIME NOT NULL DEFAULT GETDATE(),         -- 用户注册时间，不允许为空，默认当前系统时间
     [VerificationToken] UNIQUEIDENTIFIER NULL,              -- 用于存储魔术链接认证的临时token
-    [TokenExpireTime] DATETIME NULL                         -- 用于存储token过期时间
+    [TokenExpireTime] DATETIME NULL,                         -- 用于存储token过期时间
+    [LastLoginTime] DATETIME2 NULL                         -- 用户最后登录时间
 );
+GO
+
+CREATE UNIQUE INDEX UQ_User_Email ON [User](Email) WHERE Email IS NOT NULL;
 GO
 
 -- 2. 商品表 (Product)
