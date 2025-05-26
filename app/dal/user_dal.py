@@ -258,41 +258,86 @@ class UserDAL:
             raise DALError(f"Database error while fetching password hash: {e}") from e
 
     async def delete_user(self, conn: pyodbc.Connection, user_id: UUID) -> bool:
-        """删除用户。"""
-        logger.debug(f"DAL: Attempting to delete user with ID: {user_id}") # Add logging
-        # 调用 sp_DeleteUser 存储过程 (这个SP在你的sql_scripts里没有找到，假设存在且逻辑正确)
-        # 如果 sp_DeleteUser 不存在，需要创建
-        # 暂时保留原有的假设调用，并在文档中提示需要实现或确认此SP
-        sql = "{CALL sp_DeleteUser(?)}"
+        """Deletes a user by their ID using sp_DeleteUser, processing a single combined debug and result code output."""
+        logger.info(f"DAL: Attempting to delete user with ID: {user_id}")
+        
+        result_data = None
+
         try:
-            logger.debug(f"DAL: Executing sp_DeleteUser for ID: {user_id}") # Add logging
-            # Use the injected execute_query function
-            # execute_query 默认返回 rowcount 对于 DELETE 操作
-            # 存储过程 sp_DeleteUser 应该返回 rowcount 或者抛出异常
-            # 如果存储过程使用 RAISERROR 并且没有返回行，execute_query 可能会捕获到异常或者返回 None/0 rowcount
-            # 假设 SP 抛出异常或者返回0 rowcount 表示未找到用户
-            result = await self._execute_query(conn, sql, (user_id,))
-            # execute_query 返回的结果类型需要根据实际实现确定，可能是 rowcount 或其他
+            cursor = conn.cursor()
+            logger.debug(f"DAL: Executing sp_DeleteUser for ID: {user_id}")
+            cursor.execute("{CALL sp_DeleteUser(?)}", user_id)
 
-            # 这里的逻辑依赖于 execute_query 和 sp_DeleteUser 的具体实现
-            # 如果 execute_query 在 RAISERROR 时抛出异常，那 NotFoundError 会被捕获
-            # 如果 execute_query 返回 rowcount 且 SP 在用户不存在时返回 0 rowcount
-            if result == 0:
-                 raise NotFoundError(f"User with ID {user_id} not found for deletion.")
-            # 假设成功删除返回非零 rowcount 或者 execute_query 返回 True
-            # 根据 execute_query 的文档，对于非 SELECT 语句，成功时返回 rowcount
-            if result is not None and result > 0:
-                 return True # 表示删除成功
+            logger.debug("DAL: Attempting to fetch the single result set from sp_DeleteUser.")
+            rows = cursor.fetchall()
+            if rows and len(rows) > 0:
+                row = rows[0]
+                # Construct a dictionary from the row object for easier access
+                if cursor.description:
+                    result_data = {column[0]: getattr(row, column[0]) for column in cursor.description}
+                    logger.info(f"SP_DeleteUser Combined Output: {result_data}")
+                else:
+                    logger.warning("SP_DeleteUser: cursor.description not available for the result set. Raw row: {row}")
+                    # Fallback or error handling if column names are unknown
+                    # For now, let's assume OperationResultCode might be accessible by index if names fail, but this is risky
+                    # operation_result_code = row[4] if len(row) > 4 else None # Example, highly unreliable
+            else:
+                logger.warning("SP_DeleteUser did not return the expected result set (fetchall returned None or empty).")
             
-            # Unexpected case
-            logger.warning(f"DAL: Unexpected result from sp_DeleteUser for user {user_id}: {result}")
-            return False
+            cursor.close()
 
-        except NotFoundError:
-            raise # Re-raise NotFoundError
-        except Exception as e:
-            logger.error(f"DAL: Error deleting user with ID {user_id}: {e}")
-            raise DALError(f"Database error during user deletion: {e}") from e
+            operation_result_code = result_data.get('OperationResultCode') if result_data else None
+
+            if operation_result_code == 0:
+                conn.commit()
+                logger.info(f"DAL: User {user_id} deleted successfully (commit executed based on OperationResultCode: 0).")
+                return True
+            elif operation_result_code == -1:
+                logger.warning(f"DAL: User {user_id} not found by sp_DeleteUser (OperationResultCode: -1). Full debug: {result_data}")
+                conn.rollback()
+                return False
+            elif operation_result_code == -2:
+                logger.warning(f"DAL: User {user_id} could not be deleted due to dependencies (OperationResultCode: -2). Full debug: {result_data}")
+                conn.rollback()
+                return False
+            elif operation_result_code == -3:
+                logger.warning(f"DAL: User {user_id} was found but DELETE operation failed (OperationResultCode: -3). Full debug: {result_data}")
+                conn.rollback()
+                return False
+            elif operation_result_code == -4:
+                logger.warning(f"DAL: Database error during sp_DeleteUser's transaction (OperationResultCode: -4). Full debug: {result_data}")
+                conn.rollback()
+                return False
+            elif operation_result_code == -90:
+                logger.warning(f"DAL: Database error during sp_DeleteUser's initial user check (OperationResultCode: -90). Full debug: {result_data}")
+                conn.rollback()
+                return False
+            else:
+                logger.warning(f"DAL: sp_DeleteUser for user {user_id} returned an unexpected OperationResultCode or state: {operation_result_code}. Full debug: {result_data}. Rolling back.")
+                conn.rollback()
+                return False
+
+        except pyodbc.Error as e:
+            logger.error(f"DAL: Database error during user deletion for {user_id}: {e}")
+            try:
+                conn.rollback()
+            except Exception as rb_ex:
+                logger.error(f"DAL: Error during rollback attempt: {rb_ex}")
+            return False
+        except Exception as ex:
+            logger.error(f"DAL: Unexpected Python error during user deletion for {user_id}: {ex}")
+            try:
+                conn.rollback()
+            except Exception as rb_ex:
+                logger.error(f"DAL: Error during rollback attempt: {rb_ex}")
+            return False
+        finally:
+            if 'cursor' in locals() and cursor: # Check if cursor was defined
+                try:
+                    # Closing an already closed cursor is generally safe with pyodbc.
+                    cursor.close()
+                except pyodbc.Error as ce:
+                    logger.debug(f"DAL: Error closing cursor (might be already closed or invalid): {ce}")
 
     async def request_verification_link(self, conn: pyodbc.Connection, email: str) -> dict:
          """请求邮箱验证链接，调用sp_RequestMagicLink。"""

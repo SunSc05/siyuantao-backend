@@ -525,33 +525,116 @@ CREATE PROCEDURE [sp_DeleteUser]
 AS
 BEGIN
     SET NOCOUNT ON;
+    -- SET XACT_ABORT ON; -- 暂时也注释掉 XACT_ABORT，以排除其可能的早期中断效应
+
+    DECLARE @InputUserID_Str VARCHAR(36) = CONVERT(VARCHAR(36), @userId);
+    DECLARE @FoundUsername NVARCHAR(128) = NULL;
+    DECLARE @UserCount INT = -100; -- 初始化为一个特殊值，表示尚未执行查询
+    DECLARE @OperationResultCode INT = -999; -- 新增：用于最终操作结果，区别于过程中的ResultCode
+    DECLARE @DebugMessage NVARCHAR(500) = N'Debug process started.';
 
     BEGIN TRY
-        BEGIN TRANSACTION;
-
-        -- SQL语句1 (DELETE)
-        DELETE FROM [User]
+        -- 直接在 User 表中查询用户数量和用户名
+        SELECT @UserCount = COUNT(*), @FoundUsername = MAX(Username) 
+        FROM [User] 
         WHERE UserID = @userId;
-
-        -- 检查是否删除成功
-        IF @@ROWCOUNT = 0
-        BEGIN
-            -- 如果用户不存在，则抛出错误
-            RAISERROR('用户不存在。', 16, 1);
-            IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
-            RETURN;
-        END
-
-        COMMIT TRANSACTION; -- 提交事务
-
-        -- SQL语句2: 返回成功信息（或者根据需要返回删除的行数等）
-        SELECT CAST(1 AS BIT) AS Success; -- 返回一个布尔值表示成功
+        
+        SET @DebugMessage = N'After COUNT query. UserCount: ' + ISNULL(CAST(@UserCount AS NVARCHAR), 'NULL') + N'. FoundUsername: ' + ISNULL(@FoundUsername, N'NULL_OR_NOT_FOUND');
 
     END TRY
     BEGIN CATCH
-        IF @@TRANCOUNT > 0
-            ROLLBACK TRANSACTION;
-        THROW; -- 重新抛出捕获的错误
+        SET @UserCount = -99; -- 特殊值表示在尝试COUNT时发生错误
+        SET @FoundUsername = N'ERROR_READING_USERNAME_DURING_COUNT';
+        SET @DebugMessage = N'ERROR during user count/select: Error ' + CAST(ERROR_NUMBER() AS VARCHAR(10)) + N' - ' + ERROR_MESSAGE();
+        SET @OperationResultCode = -90; -- 表示在检查用户时发生错误
+        -- 直接输出结果并返回，不再继续执行删除
+        SELECT 
+            @InputUserID_Str AS Debug_InputUserID,
+            @UserCount AS Debug_UserCount,
+            @FoundUsername AS Debug_FoundUsername,
+            @DebugMessage AS Debug_Message,
+            @OperationResultCode AS OperationResultCode;
+        RETURN;
     END CATCH
+
+    -- 检查用户是否存在，并决定是否继续
+    IF @UserCount = 1
+    BEGIN
+        SET @DebugMessage = @DebugMessage + N' | User found.';
+        -- 检查依赖关系 (暂时简化或注释掉大部分，专注于删除逻辑本身)
+        IF EXISTS (SELECT 1 FROM [Product] WHERE OwnerID = @userId AND Status NOT IN ('Sold', 'Cancelled')) OR
+           EXISTS (SELECT 1 FROM [Order] WHERE (BuyerID = @userId OR SellerID = @userId) AND Status NOT IN ('Completed', 'Cancelled', 'Refunded')) OR
+        --    EXISTS (SELECT 1 FROM [Evaluation] WHERE BuyerID = @userId OR SellerID = @userId) OR
+        --    EXISTS (SELECT 1 FROM [Report] WHERE ReporterUserID = @userId OR ReportedUserID = @userId) OR
+        --    EXISTS (SELECT 1 FROM [Favorite] WHERE UserID = @userId) OR
+        --    EXISTS (SELECT 1 FROM [StudentAuthentication] WHERE UserID = @userId AND Status = 'Verified') OR
+           EXISTS (
+                SELECT 1 FROM [ChatMessage] CM
+                WHERE ((CM.SenderID = @userId AND CM.SenderVisible = 1) OR (CM.ReceiverID = @userId AND CM.ReceiverVisible = 1))
+                AND CM.SendTime > DATEADD(month, -3, GETDATE())
+           ) OR
+        --    EXISTS (SELECT 1 FROM [SystemNotification] WHERE UserID = @userId AND IsRead = 0) OR -- 假设未读系统通知不阻止删除
+           EXISTS (SELECT 1 FROM [Order] WHERE BuyerID = @userId OR SellerID = @userId AND Status NOT IN ('Completed', 'Cancelled'))
+
+        BEGIN
+            SET @DebugMessage = @DebugMessage + N' | Dependency check failed. Cannot delete user.';
+            SET @OperationResultCode = -2; -- 表示存在依赖，无法删除
+        END
+        ELSE
+        BEGIN
+            BEGIN TRY
+                BEGIN TRANSACTION;
+                SET @DebugMessage = @DebugMessage + N' | No critical dependencies found. Proceeding with deletion.';
+
+                -- 执行删除操作 (示例, 从 User 表删除)
+                -- 实际应用中需要按正确的顺序删除相关表的数据
+                -- DELETE FROM [StudentAuthentication] WHERE UserID = @userId;
+                -- DELETE FROM [Favorite] WHERE UserID = @userId;
+                -- DELETE FROM [Report] WHERE ReporterUserID = @userId OR ReportedUserID = @userId;
+                -- DELETE FROM [Evaluation] WHERE BuyerID = @userId OR SellerID = @userId;
+                -- DELETE FROM [ChatMessage] WHERE SenderID = @userId OR ReceiverID = @userId; -- 或者仅标记为不可见
+                -- DELETE FROM [Order] WHERE BuyerID = @userId OR SellerID = @userId; -- 通常订单不直接删除，而是标记
+                -- DELETE FROM [Product] WHERE OwnerID = @userId; -- 通常商品不直接删除
+                -- DELETE FROM [Transaction] WHERE BuyerID = @userId OR SellerID = @userId;
+                -- DELETE FROM [SystemNotification] WHERE UserID = @userId;
+                -- 最后删除用户表自身
+                DELETE FROM [User] WHERE UserID = @userId;
+
+                IF @@ROWCOUNT = 1
+                BEGIN
+                    SET @DebugMessage = @DebugMessage + N' | User successfully deleted from User table.';
+                    SET @OperationResultCode = 0; -- 成功删除
+                    IF @@TRANCOUNT > 0 COMMIT TRANSACTION;
+                END
+                ELSE
+                BEGIN
+                    SET @DebugMessage = @DebugMessage + N' | User was found initially, but @@ROWCOUNT after DELETE was 0. Possible race condition or other issue.';
+                    SET @OperationResultCode = -3; -- 删除时未找到或未成功删除
+                    IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+                END
+            END TRY
+            BEGIN CATCH
+                SET @DebugMessage = @DebugMessage + N' | ERROR during delete transaction: ' + ERROR_MESSAGE();
+                SET @OperationResultCode = -4; -- 删除过程中发生数据库错误
+                IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+            END CATCH
+        END
+    END
+    ELSE
+    BEGIN
+        SET @DebugMessage = @DebugMessage + N' | User not found (UserCount != 1).';
+        SET @OperationResultCode = -1; -- 用户未找到
+    END
+
+    -- 最终返回单一结果集
+    SELECT 
+        @InputUserID_Str AS Debug_InputUserID,
+        @UserCount AS Debug_UserCount,
+        @FoundUsername AS Debug_FoundUsername,
+        @DebugMessage AS Debug_Message,
+        @OperationResultCode AS OperationResultCode; -- 最终的操作结果代码
+
+    -- 不再需要单独的 SELECT @ResultCode AS ResultCode;
+
 END;
 GO

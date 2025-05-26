@@ -441,73 +441,107 @@ class UserService:
             raise e
 
     def _map_dal_keys_to_schema_keys(self, dal_user_data: dict) -> dict:
-        """Maps DAL dictionary keys (potential SQL column names/aliases) to UserResponseSchema field names."""
+        """
+        Maps keys from DAL (potentially with Chinese characters from SP output)
+        to keys expected by UserResponseSchema.
+        """
         if not dal_user_data:
             return {}
 
-        mapped_data = {}
-        # Define mapping from schema field name to a list of potential DAL dictionary keys
-        # Include snake_case as a potential key name as well
-        key_mapping = {
-            "user_id": ["UserID", "用户ID", "user_id"], # Add snake_case
-            "username": ["UserName", "用户名", "username"], # Add snake_case
-            "email": ["Email", "邮箱", "email"], # Add snake_case
-            "status": ["Status", "账户状态", "status"], # Add snake_case
-            "credit": ["Credit", "信用分", "credit"], # Add snake_case
-            "is_staff": ["IsStaff", "是否管理员", "is_staff"], # Add snake_case
-            "is_verified": ["IsVerified", "是否已认证", "is_verified"], # Add snake_case
-            "major": ["Major", "专业", "major"], # Add snake_case
-            "avatar_url": ["AvatarUrl", "头像URL", "avatar_url"], # Add snake_case
-            "bio": ["Bio", "个人简介", "bio"], # Add snake_case
-            "phone_number": ["PhoneNumber", "手机号码", "phone_number"], # Add snake_case
-            "join_time": ["JoinTime", "注册时间", "join_time"], # Add snake_case
+        key_map = {
+            # Chinese keys from SP to English keys in UserResponseSchema
+            '用户ID': 'user_id',
+            '用户名': 'username',
+            '邮箱': 'email',
+            '账户状态': 'status',
+            '信用分': 'credit',
+            '是否管理员': 'is_staff',
+            '是否已认证': 'is_verified',
+            '专业': 'major',
+            '头像URL': 'avatar_url',
+            '个人简介': 'bio',
+            '手机号码': 'phone_number',
+            '注册时间': 'join_time',
+            # English keys (if DAL already returns them correctly or for other SPs)
+            'UserID': 'user_id',
+            'UserName': 'username',
+            'Email': 'email',
+            'Status': 'status',
+            'Credit': 'credit',
+            'IsStaff': 'is_staff',
+            'IsVerified': 'is_verified',
+            'Major': 'major',
+            'AvatarUrl': 'avatar_url',
+            'Bio': 'bio',
+            'PhoneNumber': 'phone_number',
+            'JoinTime': 'join_time',
+            # Add other potential mappings if necessary
         }
+        
+        mapped_data = {}
+        for dal_key, value in dal_user_data.items():
+            schema_key = key_map.get(dal_key)
+            if schema_key:
+                # Handle specific type conversions if necessary
+                if schema_key == 'join_time' and isinstance(value, str):
+                    try:
+                        # Attempt to parse if it's a string that needs conversion
+                        mapped_data[schema_key] = datetime.fromisoformat(value.replace('Z', '+00:00')) if value else None
+                    except ValueError:
+                        logger.warning(f"Could not parse date string {value} for join_time. Keeping original.")
+                        mapped_data[schema_key] = value 
+                elif schema_key in ['is_staff', 'is_verified']:
+                     # Ensure boolean values are correctly interpreted
+                    if isinstance(value, int): # SQL Server might return 0 or 1 for BIT
+                        mapped_data[schema_key] = bool(value)
+                    elif isinstance(value, str): # Handle "True" / "False" strings if ever returned
+                        mapped_data[schema_key] = value.lower() == 'true'
+                    else:
+                        mapped_data[schema_key] = value # Assume it's already a boolean
+                else:
+                    mapped_data[schema_key] = value
+            else:
+                # If a key is not in the map, it might be an unexpected field or already correct
+                # For safety, we can log it or include it as is, or ignore it.
+                # Let's include it for now, but log a warning if it's not already an English schema key.
+                if dal_key not in UserResponseSchema.model_fields: # Check against Pydantic schema fields
+                    logger.warning(f"Unmapped DAL key '{dal_key}' found. Passing as is.")
+                mapped_data[dal_key] = value
 
-        for schema_key, dal_keys in key_mapping.items():
-            for dal_key in dal_keys:
-                # Check if the key exists AND the value is not None
-                if dal_key in dal_user_data and dal_user_data[dal_key] is not None:
-                    mapped_data[schema_key] = dal_user_data[dal_key]
-                    break # Found a valid value, move to the next schema key
-                # If the key exists but the value is None, we explicitly set it to None
-                elif dal_key in dal_user_data and dal_user_data[dal_key] is None:
-                     mapped_data[schema_key] = None
-                     # If the key exists with None value, we still map it as None and break
-                     # This ensures Optional fields are explicitly set to None if they are NULL in DB
-                     break
-            # If the loop finishes and the schema_key is not in mapped_data, it means none of the dal_keys were found.
-            # Pydantic will handle this for Optional fields by defaulting to None.
-            # For required fields, this would lead to a validation error.
+
+        # Ensure all required fields for UserResponseSchema are present, providing defaults if necessary
+        # This step is crucial if _convert_dal_user_to_schema directly uses this output for Pydantic model creation
+        # However, _convert_dal_user_to_schema seems to handle Pydantic model creation itself.
+        # So, just returning the mapped_data should be sufficient here.
 
         return mapped_data
 
-    # Helper method to convert DAL dictionary to UserResponseSchema (defined earlier)
     def _convert_dal_user_to_schema(self, dal_user_data: dict) -> UserResponseSchema:
-        """Converts a dictionary from DAL to a UserResponseSchema Pydantic model."""
+        """
+        Converts a user data dictionary from DAL to a UserResponseSchema object.
+        Handles key mapping and potential type conversions.
+        """
         if not dal_user_data:
-             # Handle case where DAL returns no data for a single entity fetch (e.g., user not found)
-             # This should ideally be caught by DAL/Service before conversion, but adding a safeguard.
-             logger.warning("Attempted to convert empty DAL data to UserResponseSchema")
-             # Depending on context, you might return None, raise NotFoundError, or return a default schema.
-             # Given this is for conversion *after* data is fetched, returning None or raising is appropriate.
-             # Raising an error here if data is expected is better for debugging upstream issues.
-             raise DALError("Cannot convert empty database result to UserResponseSchema") # Indicate issue with data retrieval
+            logger.warning("Attempted to convert empty DAL user data to schema.")
+            # Depending on strictness, could raise error or return a default UserResponseSchema
+            # For now, let's assume an error or that this case should be handled before calling
+            raise ValueError("Cannot convert empty DAL user data to schema.")
+
+        # First, map keys from DAL (potentially Chinese) to schema keys (English)
+        schema_compatible_data = self._map_dal_keys_to_schema_keys(dal_user_data)
+        
+        # Ensure all fields expected by UserResponseSchema are present or have defaults
+        # Pydantic will handle default values for Optional fields if they are missing
+        # For required fields, if they are missing after mapping, Pydantic will raise a validation error
 
         try:
-            # Use the robust mapping helper
-            mapped_data = self._map_dal_keys_to_schema_keys(dal_user_data)
-
-            # Create and return the Pydantic model instance
-            # Pydantic will perform validation. Required fields missing in mapped_data or mapped as None will cause validation errors.
-            # With UserResponseSchema fields now being Optional, None values from DAL will be accepted.
-            return UserResponseSchema(**mapped_data)
-
-        except Exception as e:
-            # Log the error and the data that caused it
-            loggable_data = {k: str(v) if isinstance(v, UUID) else v for k, v in dal_user_data.items()} if dal_user_data else None
-            logger.error(f"Error converting DAL user data to schema: {e}. Data: {loggable_data}")
-            # Re-raise the error, ensuring Pydantic validation errors are distinguishable if needed
-            # For now, wrapping in DALError is consistent.
-            raise DALError(f"Failed to process user data for schema conversion: {e}") from e
+            # Create the Pydantic model instance
+            user_schema_instance = UserResponseSchema(**schema_compatible_data)
+            return user_schema_instance
+        except Exception as e: # Catch Pydantic ValidationError or other model instantiation errors
+            logger.error(f"Error creating UserResponseSchema from data: {schema_compatible_data}. Error: {e}")
+            # Re-raise as a more generic error or handle as appropriate
+            # For now, let's re-raise to make it visible
+            raise DALError(f"Failed to convert DAL data to UserResponseSchema: {e}") from e
 
 # TODO: Add service functions for admin operations (get all users, disable/enable user etc.)
