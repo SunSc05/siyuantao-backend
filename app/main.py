@@ -21,7 +21,8 @@ except ImportError:
 
 # 导入所有模块路由
 from app.routers import users, auth # 暂时只导入已存在的路由
-# from app.routers import products, orders # 这些文件后面会创建
+from app.routers import products  # 添加商品路由
+# from app.routers import  orders # 这些文件后面会创建
 
 # Define a comprehensive logging configuration dictionary
 LOGGING_CONFIG = {
@@ -148,6 +149,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 
 # 注册路由模块
 app.include_router(users.router, prefix="/api/v1")
+app.include_router(products.router, prefix="/api/v1/products", tags=["Products"])  # 注册商品路由
 # app.include_router(products.router, prefix="/api/v1/products", tags=["Products"]) # 暂时注释掉未创建的路由
 # app.include_router(orders.router, prefix="/api/v1/orders", tags=["Orders"]) # 暂时注释掉未创建的路由
 app.include_router(auth.router, prefix="/api/v1")
