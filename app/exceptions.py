@@ -21,6 +21,13 @@ class IntegrityError(DALError):
 
 # ... 您可以根据业务需求添加更多特定异常，例如 AuthorizationError, ValidationError (for business logic)
 
+class EmailSendingError(Exception):
+    """Raised when there is an error sending email."""
+    def __init__(self, message="Email sending failed", detail=None):
+        self.message = message
+        self.detail = detail
+        super().__init__(self.message)
+
 class AuthenticationError(Exception):
     """Raised when authentication fails."""
     def __init__(self, message="Authentication failed"):

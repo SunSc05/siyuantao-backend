@@ -6,7 +6,8 @@ from app.schemas.user_schemas import (
     UserProfileUpdateSchema, 
     UserPasswordUpdate, # Import necessary schemas
     UserStatusUpdateSchema, # Added for new admin endpoint
-    UserCreditAdjustmentSchema # Added for new admin endpoint
+    UserCreditAdjustmentSchema, # Added for new admin endpoint
+    RequestVerificationEmail # Import the schema for requesting verification email
 )
 # from app.dal import users as user_dal # No longer needed
 # from app.services import user_service # No longer needed (using dependency)
@@ -21,36 +22,37 @@ from uuid import UUID
 from app.dependencies import (
     get_current_user, # For authenticated endpoints
     get_current_active_admin_user, # For admin-only endpoints
-    get_user_service # Dependency for UserService
+    get_user_service, # Dependency for UserService
+    get_current_authenticated_user # For active authenticated users
 )
 from app.exceptions import NotFoundError, IntegrityError, DALError, AuthenticationError, ForbiddenError # Import necessary exceptions
+
+import logging # Import logging
+logger = logging.getLogger(__name__) # Get logger instance
 
 router = APIRouter(prefix="/users", tags=["Users"])
 
 @router.get("/me", response_model=UserResponseSchema)
 async def read_users_me(
     # current_user: dict = Depends(get_current_user) # Requires JWT authentication
-    current_user: dict = Depends(get_current_user), # Use dependency from dependencies.py
+    current_user: dict = Depends(get_current_authenticated_user), # Use dependency from dependencies.py - ensures user is active
     conn: pyodbc.Connection = Depends(get_db_connection), # Inject DB connection
     user_service: UserService = Depends(get_user_service) # Inject Service
 ):
     """
     获取当前登录用户的个人资料。
     """
-    # get_current_user dependency should provide the user ID (e.g., in a dict)
-    user_id = current_user.get('UserID') or current_user.get('user_id') # Adapt based on how get_current_user returns ID
-    if not user_id:
-         # This should not happen if get_current_user works correctly, but as a safeguard
-         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="无法获取当前用户信息")
-    
+    # get_current_authenticated_user dependency should provide the user ID (e.g., in a dict)
+    # It also ensures the user is active and handles exceptions.
+    user_id = current_user['user_id'] # Access user_id from the dependency's dictionary result
+
     try:
         # Call Service layer function, passing the connection and user_id
         user_profile = await user_service.get_user_profile_by_id(conn, user_id) # Pass user_id directly (expected to be UUID)
         return user_profile
     except NotFoundError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
-    except (AuthenticationError, ForbiddenError) as e:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED if isinstance(e, AuthenticationError) else status.HTTP_403_FORBIDDEN, detail=str(e))
+    # Authentication and Forbidden errors are handled by get_current_authenticated_user dependency
     except DALError as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"数据库操作失败: {e}")
     except Exception as e:
@@ -60,16 +62,14 @@ async def read_users_me(
 async def update_current_user_profile(
     user_update_data: UserProfileUpdateSchema, # Request body here
     # current_user: dict = Depends(get_current_user) # Requires JWT authentication
-    current_user: dict = Depends(get_current_user), # Use dependency from dependencies.py
+    current_user: UserResponseSchema = Depends(get_current_authenticated_user), # Use dependency from dependencies.py
     conn: pyodbc.Connection = Depends(get_db_connection), # Inject DB connection
     user_service: UserService = Depends(get_user_service) # Inject Service
 ):
     """
     更新当前登录用户的个人资料 (不包括密码)。
     """
-    user_id = current_user.get('UserID') or current_user.get('user_id') # Adapt based on how get_current_user returns ID
-    if not user_id:
-         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="无法获取当前用户信息")
+    user_id = current_user['user_id'] # Access user_id from the dependency's dictionary result
 
     try:
         # Call Service layer function, passing the connection and user_id
@@ -79,8 +79,7 @@ async def update_current_user_profile(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
     except IntegrityError as e:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
-    except (AuthenticationError, ForbiddenError) as e:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED if isinstance(e, AuthenticationError) else status.HTTP_403_FORBIDDEN, detail=str(e))
+    # Authentication and Forbidden errors are handled by get_current_authenticated_user dependency
     except DALError as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"数据库操作失败: {e}")
     except Exception as e:
@@ -90,16 +89,14 @@ async def update_current_user_profile(
 async def update_current_user_password(
     password_update_data: UserPasswordUpdate, # Request body here
     # current_user: dict = Depends(get_current_user) # Requires JWT authentication
-    current_user: dict = Depends(get_current_user), # Use dependency from dependencies.py
+    current_user: UserResponseSchema = Depends(get_current_authenticated_user), # Use dependency from dependencies.py
     conn: pyodbc.Connection = Depends(get_db_connection), # Inject DB connection
     user_service: UserService = Depends(get_user_service) # Inject Service
 ):
     """
     更新当前登录用户的密码。
     """
-    user_id = current_user.get('UserID') or current_user.get('user_id') # Adapt based on how get_current_user returns ID
-    if not user_id:
-         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="无法获取当前用户信息")
+    user_id = current_user['user_id'] # Access user_id from the dependency's dictionary result
 
     try:
         # Call Service layer function, passing the connection and user_id
@@ -114,8 +111,8 @@ async def update_current_user_password(
     except (NotFoundError, AuthenticationError, DALError, ForbiddenError) as e:
          # Catch specific errors from Service
          raise HTTPException(
-             status_code=status.HTTP_404_NOT_FOUND if isinstance(e, NotFoundError) else 
-                           (status.HTTP_401_UNAUTHORIZED if isinstance(e, AuthenticationError) else 
+             status_code=status.HTTP_404_NOT_FOUND if isinstance(e, NotFoundError) else
+                           (status.HTTP_401_UNAUTHORIZED if isinstance(e, AuthenticationError) else
                             (status.HTTP_403_FORBIDDEN if isinstance(e, ForbiddenError) else status.HTTP_500_INTERNAL_SERVER_ERROR)),
              detail=str(e),
              # Include WWW-Authenticate header for AuthenticationError (401)
@@ -168,9 +165,9 @@ async def update_user_profile_by_id(
         return updated_user
     except (NotFoundError, IntegrityError, DALError, AuthenticationError, ForbiddenError) as e:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND if isinstance(e, NotFoundError) else 
-                          (status.HTTP_409_CONFLICT if isinstance(e, IntegrityError) else 
-                           (status.HTTP_401_UNAUTHORIZED if isinstance(e, AuthenticationError) else 
+            status_code=status.HTTP_404_NOT_FOUND if isinstance(e, NotFoundError) else
+                          (status.HTTP_409_CONFLICT if isinstance(e, IntegrityError) else
+                           (status.HTTP_401_UNAUTHORIZED if isinstance(e, AuthenticationError) else
                             (status.HTTP_403_FORBIDDEN if isinstance(e, ForbiddenError) else status.HTTP_500_INTERNAL_SERVER_ERROR))),
             detail=str(e)
         )
@@ -302,6 +299,40 @@ async def adjust_user_credit_by_id(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"数据库操作失败: {e}")
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"服务器内部错误: {e}")
+
+# New endpoint for requesting student verification email
+@router.post("/me/request-student-verification-email", status_code=status.HTTP_200_OK, summary="请求学生身份验证邮件")
+async def request_student_email_verification_api(
+    request_data: RequestVerificationEmail, # Reuse RequestVerificationEmail schema
+    current_user: UserResponseSchema = Depends(get_current_authenticated_user), # Needs authenticated user
+    user_service: UserService = Depends(get_user_service),
+    conn: pyodbc.Connection = Depends(get_db_connection)
+):
+    """
+    当前登录用户请求发送学生身份验证邮件到其校园邮箱。
+    """
+    user_id = current_user['user_id'] # Access user_id from the dependency's dictionary result
+    email = request_data.email # Use the email from the request body
+
+    logger.info(f"API: User {user_id} requesting student verification email for {email}")
+    try:
+        # Call Service layer function
+        result = await user_service.request_verification_email(conn, user_id, email) # Pass user_id and email
+        # Service layer handles validation, token generation, email update in DB, and sending email
+        return {"message": result.get("message", "验证邮件已发送。")} # Return message from service
+
+    except (IntegrityError, ValueError, DALError, AuthenticationError, ForbiddenError) as e:
+         # Catch specific errors from Service
+         raise HTTPException(
+             status_code=status.HTTP_409_CONFLICT if isinstance(e, IntegrityError) else # Email already in use
+                           (status.HTTP_400_BAD_REQUEST if isinstance(e, ValueError) else # Invalid email format or bad request
+                            (status.HTTP_401_UNAUTHORIZED if isinstance(e, AuthenticationError) else
+                             (status.HTTP_403_FORBIDDEN if isinstance(e, ForbiddenError) else status.HTTP_500_INTERNAL_SERVER_ERROR))),
+             detail=str(e)
+         )
+    except Exception as e:
+        logger.exception("API: Unexpected error during request student verification email")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"发送验证邮件时发生内部错误: {e}")
 
 # Removed email verification routes as they are in auth.py
 # @router.post("/request-verification-email", status_code=status.HTTP_200_OK)

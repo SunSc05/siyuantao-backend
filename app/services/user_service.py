@@ -3,16 +3,18 @@ import pyodbc
 from uuid import UUID
 from typing import Optional
 import logging
+import re # Import regex for email validation
 
 logger = logging.getLogger(__name__) # Initialize logger
 
 from app.dal.user_dal import UserDAL # Import the UserDAL class
-from app.schemas.user_schemas import UserRegisterSchema, UserLoginSchema, UserProfileUpdateSchema, UserPasswordUpdate, UserStatusUpdateSchema, UserCreditAdjustmentSchema, UserResponseSchema # Import necessary schemas
+from app.schemas.user_schemas import UserRegisterSchema, UserLoginSchema, UserProfileUpdateSchema, UserPasswordUpdate, UserStatusUpdateSchema, UserCreditAdjustmentSchema, UserResponseSchema, RequestVerificationEmail, VerifyEmail # Import necessary schemas
 from app.utils.auth import get_password_hash, verify_password, create_access_token # Importing auth utilities
 from app.exceptions import NotFoundError, IntegrityError, DALError, AuthenticationError, ForbiddenError # Import necessary exceptions
 from datetime import timedelta # Needed for token expiry
 from app.config import settings # Import settings object
 from datetime import datetime # Import datetime for data conversion
+from app.utils.email_sender import send_student_verification_email # Import the email sender
 
 # Removed direct instantiation of DAL
 # user_dal = UserDAL()
@@ -260,41 +262,84 @@ class UserService:
             logger.error(f"Unexpected error during user deletion for ID {user_id}: {e}")
             raise e
 
-    async def request_verification_email(self, conn: pyodbc.Connection, email: str) -> dict:
+    async def request_verification_email(self, conn: pyodbc.Connection, user_id: UUID, email: str) -> dict:
         """
-        Service layer function to request email verification link.
+        Service layer function to request email verification link for a user.
+        Validates email format for student verification purposes, updates user's email,
+        calls DAL to generate token, and sends verification email.
         """
-        logger.info(f"Attempting to request verification email for email: {email}")
+        logger.info(f"Attempting to request verification email for user ID: {user_id}, email: {email}")
+
+        # Business Logic: Validate email format (e.g., ending with .edu.cn for student verification)
+        # You can adjust the regex based on specific university email formats
+        if not re.match(r"^[a-zA-Z0-9._%+-]+@([a-zA-Z0-9-]+\.)+edu\.cn$", email):
+             raise ValueError("无效的校园邮箱格式。请确保邮箱以 .edu.cn 结尾。") # Use ValueError for bad input
+
         try:
-            # Call DAL to request verification link
-            logger.debug(f"Calling DAL.request_verification_link for email: {email}")
-            result = await self.user_dal.request_verification_link(conn, email)
-            logger.debug(f"DAL.request_verification_link returned: {result}")
-            
-            # The DAL should handle cases like email not found or already verified.
-            # If result indicates success (e.g., a link was generated/sent), return a success message.
-            # The DAL stored procedure sp_RequestVerificationLink seems to return a message.
-            # We can check the message or a specific status indicator if DAL provides one.
-            # Assuming DAL returns a dictionary with a 'message' key on success/info.
-            if result and isinstance(result, dict) and result.get('message'):
-                 logger.info(f"Verification email request processed for email: {email}")
-                 return result # Return the message from DAL
+            # Optional Business Logic: Check if email is already verified by another user
+            # This check is ideally done in the DAL/Stored Procedure for atomicity,
+            # but a pre-check here can give faster feedback. However, rely on DAL's
+            # IntegrityError for the definitive check during token generation.
+            # For now, let's rely on the DAL's handling of duplicate emails.
+
+            # 1. Update user's email in the database
+            # Use a separate DAL method to update email if needed, or modify request_verification_link SP.
+            # Assuming sp_RequestMagicLink handles updating the email if it's null or different.
+            # If SP doesn't update, we'd need an explicit update call here before requesting the link.
+            # Let's modify the DAL method and SP call slightly to include the email.
+
+            # Call DAL to request verification link. Pass user_id and email.
+            # The DAL method should update the email field if necessary and generate/store the token.
+            logger.debug(f"Calling DAL.request_verification_link with user ID: {user_id}, email: {email}")
+            result = await self.user_dal.request_verification_link(conn, user_id=user_id, email=email) # Pass user_id and email
+
+            # The DAL should handle cases like disabled account, email already verified etc.
+            # If result indicates success (e.g., a token was generated/sent), return a success message.
+            # Assuming DAL returns a dictionary with a 'VerificationToken' key on success.
+            verification_token = result.get('VerificationToken')
+            message = result.get('Message') # Assuming DAL might return messages too
+
+            if verification_token:
+                 # 2. Call email sending tool
+                 # The URL needs to be your frontend verification page URL
+                 frontend_verification_url = f"{settings.FRONTEND_DOMAIN}/verify-email?token={verification_token}" # Use the general verify-email route
+                 await send_student_verification_email(email, frontend_verification_url, settings.MAGIC_LINK_EXPIRE_MINUTES)
+
+                 logger.info(f"Verification email sent to {email} for user {user_id}.")
+                 return {"message": message or "验证邮件已发送，请查收您的邮箱。", "token": verification_token} # Return token for testing/debugging
+            elif message:
+                 # If DAL returned a message but no token, it might be an informative message (e.g., already verified)
+                 logger.info(f"DAL returned message during request_verification_email for {email}: {message}")
+                 # Decide how to handle these messages. Maybe return them as success with a different status code or raise specific exceptions.
+                 # For now, treat as a successful process with an informative message.
+                 return {"message": message}
             else:
                  # This might indicate an issue in DAL even if no exception was raised.
-                 logger.error(f"DAL.request_verification_link returned unexpected result for email {email}: {result}")
-                 raise DALError(f"Failed to request verification email: Database process returned unexpected result.")
+                 logger.error(f"DAL.request_verification_link returned unexpected result for user {user_id}, email {email}: {result}")
+                 raise DALError("请求验证链接失败：数据库处理异常。")
 
+        except IntegrityError as e:
+             # Catch IntegrityError from DAL (e.g., email already in use)
+            logger.warning(f"IntegrityError during verification email request for user {user_id}, email {email}: {e}")
+            raise e # Re-raise IntegrityError
+        except ValueError as e:
+             # Catch ValueError from email validation
+            logger.warning(f"ValueError during verification email request for user {user_id}, email {email}: {e}")
+            raise e # Re-raise ValueError
         except DALError as e:
             # Catch specific DAL errors (like disabled account handled in DAL SP)
-            logger.error(f"Database error during verification email request for email {email}: {e}")
+            logger.error(f"Database error during verification email request for user {user_id}, email {email}: {e}")
             raise e # Re-raise specific DAL errors like disabled account
         except Exception as e:
-            logger.error(f"Unexpected error during verification email request for email {email}: {e}")
-            raise e
+            # Catch any other unexpected errors
+            logger.error(f"Unexpected error during verification email request for user {user_id}, email {email}: {e}")
+            raise DALError(f"发送验证邮件时发生未知错误: {e}") from e
 
     async def verify_email(self, conn: pyodbc.Connection, token: UUID) -> dict:
         """
         Service layer function to verify email using a token.
+        This method is general and used for any magic link verification,
+        including student verification.
         """
         logger.info(f"Attempting to verify email with token: {token}")
         try:
@@ -303,22 +348,23 @@ class UserService:
             result = await self.user_dal.verify_email(conn, token)
             logger.debug(f"DAL.verify_email returned: {result}")
 
-            # The DAL stored procedure sp_VerifyEmail seems to return a dictionary with UserID and IsVerified.
+            # The DAL stored procedure sp_VerifyMagicLink seems to return a dictionary with UserID and IsVerified.
             # We need to check if IsVerified is True.
-            if result and isinstance(result, dict) and result.get('IsVerified') is True:
-                logger.info(f"Email verified successfully with token: {token} for user ID: {result.get('UserID')}")
-                return result # Return the result from DAL (including UserID and IsVerified=True)
+            is_verified = result.get('IsVerified')
+            user_id = result.get('UserID')
+            message = result.get('Message') # Assuming SP might return messages
+
+            if is_verified is True and user_id:
+                logger.info(f"Email verified successfully with token: {token} for user ID: {user_id}")
+                return {"message": message or "邮箱验证成功！", "IsVerified": True, "UserID": user_id}
+            elif message:
+                 # If DAL returned a message but not successful verification
+                 logger.warning(f"DAL returned unsuccessful verification result for token {token}: {result}")
+                 raise DALError(message) # Raise error with the message from DAL
             else:
-                 # DAL should ideally raise an exception for invalid/expired token or disabled account.
-                 # If it returns a dict but IsVerified is not True, it's an unexpected DAL outcome.
-                 logger.error(f"DAL.verify_email returned unsuccessful verification result for token {token}: {result}")
-                 # Re-check for specific DAL errors that might not have been raised?
-                 if result and isinstance(result, dict) and result.get('message'):
-                     # If DAL returned a message indicating failure, use it
-                     raise DALError(f"邮箱验证失败: {result.get('message')}")
-                 else:
-                     # Generic DAL error if no specific message
-                     raise DALError("邮箱验证失败: 数据库处理异常。")
+                 # Unexpected DAL outcome
+                 logger.error(f"DAL.verify_email returned unexpected result for token {token}: {result}")
+                 raise DALError("邮箱验证失败: 数据库处理异常。")
 
         except DALError as e:
             # Catch specific DAL errors (like invalid/expired token, disabled account handled in DAL SP)
@@ -326,7 +372,7 @@ class UserService:
             raise e # Re-raise specific DAL errors
         except Exception as e:
             logger.error(f"Unexpected error during email verification with token {token}: {e}")
-            raise e
+            raise DALError(f"邮箱验证时发生未知错误: {e}") from e
 
     async def get_system_notifications(self, conn: pyodbc.Connection, user_id: UUID) -> list[dict]:
         """
@@ -462,6 +508,18 @@ class UserService:
             '个人简介': 'bio',
             '手机号码': 'phone_number',
             '注册时间': 'join_time',
+            'User ID': 'user_id', # Added English keys based on existing DAL SP output
+            'User Name': 'username',
+            'Email Address': 'email',
+            'Account Status': 'status',
+            'Credit Score': 'credit',
+            'Is Staff': 'is_staff',
+            'Is Verified': 'is_verified',
+            'Major Field': 'major',
+            'Avatar URL': 'avatar_url',
+            'Biography': 'bio',
+            'Phone Number': 'phone_number',
+            'Registration Time': 'join_time',
             # English keys (if DAL already returns them correctly or for other SPs)
             'UserID': 'user_id',
             'UserName': 'username',
@@ -480,33 +538,37 @@ class UserService:
         
         mapped_data = {}
         for dal_key, value in dal_user_data.items():
-            schema_key = key_map.get(dal_key)
-            if schema_key:
-                # Handle specific type conversions if necessary
-                if schema_key == 'join_time' and isinstance(value, str):
-                    try:
-                        # Attempt to parse if it's a string that needs conversion
-                        mapped_data[schema_key] = datetime.fromisoformat(value.replace('Z', '+00:00')) if value else None
-                    except ValueError:
-                        logger.warning(f"Could not parse date string {value} for join_time. Keeping original.")
-                        mapped_data[schema_key] = value 
-                elif schema_key in ['is_staff', 'is_verified']:
-                     # Ensure boolean values are correctly interpreted
-                    if isinstance(value, int): # SQL Server might return 0 or 1 for BIT
-                        mapped_data[schema_key] = bool(value)
-                    elif isinstance(value, str): # Handle "True" / "False" strings if ever returned
-                        mapped_data[schema_key] = value.lower() == 'true'
+            schema_key = key_map.get(dal_key, dal_key) # Use original key if not in map
+            
+            # Handle specific type conversions if necessary
+            if schema_key == 'join_time' and isinstance(value, str):
+                try:
+                    # Attempt to parse if it's a string that needs conversion
+                    # Handle potential timezone info like 'Z' or '+00:00'
+                    if value:
+                         # Simple check for common ISO formats
+                         if '.' in value: # Contains microseconds
+                             value = value.split('.')[0] # Strip microseconds for simpler parsing
+                         if value.endswith('Z'):
+                             value = value[:-1] + '+00:00' # Replace Z with +00:00
+                         
+                         mapped_data[schema_key] = datetime.fromisoformat(value) if value else None
                     else:
-                        mapped_data[schema_key] = value # Assume it's already a boolean
+                         mapped_data[schema_key] = None # Handle empty string for date
+
+                except ValueError:
+                    logger.warning(f"Could not parse date string {value} for join_time. Keeping original.")
+                    mapped_data[schema_key] = value 
+            elif schema_key in ['is_staff', 'is_verified']:
+                 # Ensure boolean values are correctly interpreted
+                if isinstance(value, int): # SQL Server might return 0 or 1 for BIT
+                    mapped_data[schema_key] = bool(value)
+                elif isinstance(value, str): # Handle "True" / "False" strings if ever returned
+                    mapped_data[schema_key] = value.lower() == 'true'
                 else:
-                    mapped_data[schema_key] = value
+                    mapped_data[schema_key] = value # Assume it's already a boolean
             else:
-                # If a key is not in the map, it might be an unexpected field or already correct
-                # For safety, we can log it or include it as is, or ignore it.
-                # Let's include it for now, but log a warning if it's not already an English schema key.
-                if dal_key not in UserResponseSchema.model_fields: # Check against Pydantic schema fields
-                    logger.warning(f"Unmapped DAL key '{dal_key}' found. Passing as is.")
-                mapped_data[dal_key] = value
+                mapped_data[schema_key] = value
 
 
         # Ensure all required fields for UserResponseSchema are present, providing defaults if necessary
@@ -536,7 +598,9 @@ class UserService:
 
         try:
             # Create the Pydantic model instance
-            user_schema_instance = UserResponseSchema(**schema_compatible_data)
+            # Pydantic v2 uses model_validate or __pydantic_validator__.validate_python
+            # Or just direct instantiation if from_attributes=True and aliases are used correctly
+            user_schema_instance = UserResponseSchema.model_validate(schema_compatible_data)
             return user_schema_instance
         except Exception as e: # Catch Pydantic ValidationError or other model instantiation errors
             logger.error(f"Error creating UserResponseSchema from data: {schema_compatible_data}. Error: {e}")

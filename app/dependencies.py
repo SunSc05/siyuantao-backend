@@ -108,6 +108,19 @@ async def get_current_active_admin_user(current_user: dict = Depends(get_current
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="需要管理员权限")
     return current_user # Return the user dict (containing user_id, is_staff, etc.)
 
+# Dependency to get the current active user (authenticated and verified/active status)
+async def get_current_authenticated_user(current_user: dict = Depends(get_current_user)):
+    # Check if user exists and is marked as verified (assuming 'Active' status is handled during login token creation)
+    # The user_service.authenticate_user_and_create_token method already checks for 'Disabled' status.
+    # We now also check 'is_verified' from the token payload provided by get_current_user.
+    if current_user is None:
+        # This case should ideally not be reached if get_current_user works correctly,
+        # but keeping a safeguard.
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="未认证")
+
+    # If checks pass, return the user dictionary payload
+    return current_user # Return the user dict (containing user_id, is_staff, is_verified)
+
 # TODO: Add get_db_connection dependency injector (Already done by importing get_db_connection)
 # TODO: Implement authentication dependency get_current_user (Done, adjusted return type)
 # TODO: Implement admin authentication dependency get_current_active_admin_user (Done)
