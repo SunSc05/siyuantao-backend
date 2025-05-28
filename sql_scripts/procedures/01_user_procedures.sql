@@ -284,66 +284,107 @@ END;
 GO
 
 -- sp_RequestMagicLink: 请求魔术链接，用于注册或登录
--- 输入: @email NVARCHAR(254)
+-- 输入: @email NVARCHAR(254), @userId UNIQUEIDENTIFIER = NULL
 -- 输出: 魔术链接令牌 (VerificationToken) 和用户ID (UserID)
 DROP PROCEDURE IF EXISTS [sp_RequestMagicLink];
 GO
 CREATE PROCEDURE [sp_RequestMagicLink]
-    @email NVARCHAR(254)
+    @email NVARCHAR(254),
+    @userId UNIQUEIDENTIFIER = NULL -- Add optional userId parameter
 AS
 BEGIN
     SET NOCOUNT ON;
 
-    DECLARE @userId UNIQUEIDENTIFIER;
+    DECLARE @targetUserId UNIQUEIDENTIFIER; -- Use a variable for the user ID we are operating on
     DECLARE @isNewUser BIT = 0;
     DECLARE @token UNIQUEIDENTIFIER = NEWID(); -- 生成新的魔术链接令牌
-    DECLARE @tokenExpireTime DATETIME = DATEADD(hour, 1, GETDATE()); -- 令牌有效期1小时
+    -- 令牌有效期设置为 15 分钟，与 settings.MAGIC_LINK_EXPIRE_MINUTES 一致
+    DECLARE @tokenExpireTime DATETIME = DATEADD(minute, 15, GETDATE()); 
     DECLARE @userStatus NVARCHAR(20);
+    DECLARE @foundByEmailUserId UNIQUEIDENTIFIER; -- To store user ID found by email
 
     BEGIN TRY
         BEGIN TRANSACTION;
 
-        -- 查找用户并获取信息 (SQL语句1)
-        SELECT @userId = UserID, @userStatus = Status
-        FROM [User]
-        WHERE Email = @email;
-
-        -- 使用 IF ELSE 进行控制流
-        IF @userId IS NULL -- 新用户
+        -- Step 1: Try to find the user by provided @userId if it's not NULL (for logged-in users)
+        IF @userId IS NOT NULL
         BEGIN
-            SET @userId = NEWID(); -- 生成新的用户ID
-            SET @isNewUser = 1;
-            -- 插入新用户 (SQL语句2)
-            INSERT INTO [User] (UserID, UserName, Password, Email, IsVerified, Status, Credit, IsStaff, JoinTime, VerificationToken, TokenExpireTime)
-            -- 用户名可以使用邮箱的一部分或随机生成，Password 可以先设为NULL或随机值
-            VALUES (@userId, 'user_' + CAST(@userId AS NVARCHAR(36)), CAST(NEWID() AS NVARCHAR(128)), @email, 0, 'Active', 100, 0, GETDATE(), @token, @tokenExpireTime);
-        END
-        ELSE -- 现有用户
-        BEGIN
-            SET @isNewUser = 0;
-            -- 检查用户是否已被禁用
-            IF @userStatus = 'Disabled'
-            BEGIN
-                RAISERROR('您的账户已被禁用，无法登录。', 16, 1);
-                IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
-                RETURN;
-            END
-            -- 更新魔术链接令牌和过期时间 (SQL语句2)
-            UPDATE [User]
-            SET VerificationToken = @token, TokenExpireTime = @tokenExpireTime
+            SELECT @targetUserId = UserID, @userStatus = Status
+            FROM [User]
             WHERE UserID = @userId;
+
+            IF @targetUserId IS NOT NULL
+            BEGIN
+                 -- User found by provided @userId
+                 SET @isNewUser = 0;
+            END
+            -- Else: User not found by provided @userId, proceed to find/create by email
+        END
+
+        -- Step 2: If user not found by @userId, try to find by @email or create new user
+        IF @targetUserId IS NULL
+        BEGIN
+            -- Find user by email (SQL语句1)
+            SELECT @foundByEmailUserId = UserID, @userStatus = Status
+            FROM [User]
+            WHERE Email = @email;
+
+            IF @foundByEmailUserId IS NULL -- New user based on email
+            BEGIN
+                SET @targetUserId = NEWID(); -- 生成新的用户ID
+                SET @isNewUser = 1;
+                -- 插入新用户 (SQL语句2)
+                INSERT INTO [User] (UserID, UserName, Password, Email, IsVerified, Status, Credit, IsStaff, JoinTime, VerificationToken, TokenExpireTime)
+                -- 用户名可以使用邮箱的一部分或随机生成，Password 可以先设为NULL或随机值
+                VALUES (@targetUserId, 'user_' + CAST(@targetUserId AS NVARCHAR(36)), CAST(NEWID() AS NVARCHAR(128)), @email, 0, 'Active', 100, 0, GETDATE(), @token, @tokenExpireTime);
+            END
+            ELSE -- Existing user found by email
+            BEGIN
+                SET @targetUserId = @foundByEmailUserId;
+                SET @isNewUser = 0;
+                -- Check if the user found by email is disabled
+                 IF @userStatus = 'Disabled'
+                 BEGIN
+                     RAISERROR('您的账户已被禁用，无法验证邮箱。', 16, 1); -- More specific error message
+                     IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+                     RETURN;
+                 END
+                 -- Update magic link token and expiry time for the user found by email (SQL语句2)
+                 UPDATE [User]
+                 SET VerificationToken = @token, TokenExpireTime = @tokenExpireTime
+                 WHERE UserID = @targetUserId;
+            END
+        END
+        ELSE -- User was found by provided @userId, now update their token
+        BEGIN
+            -- Check if the user found by @userId is disabled
+             IF @userStatus = 'Disabled'
+             BEGIN
+                 RAISERROR('您的账户已被禁用，无法验证邮箱。', 16, 1); -- More specific error message
+                 IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+                 RETURN;
+             END
+             -- Update magic link token and expiry time for the user found by @userId (SQL语句2)
+             UPDATE [User]
+             SET VerificationToken = @token, TokenExpireTime = @tokenExpireTime
+             WHERE UserID = @targetUserId;
+
+             -- Optional: If email is different from the one stored for this user ID, update it?
+             -- This depends on whether we allow changing email via this process. Assuming for now we do NOT
+             -- or that the Service layer ensures the email is updated before calling this SP with userId.
+             -- UPDATE [User] SET Email = @email WHERE UserID = @targetUserId AND Email IS NULL OR Email <> @email; -- Example update
         END
 
         COMMIT TRANSACTION;
 
         -- 返回生成的信息 (SQL语句3)
-        SELECT @token AS VerificationToken, @userId AS UserID, @isNewUser AS IsNewUser;
+        SELECT @token AS VerificationToken, @targetUserId AS UserID, @isNewUser AS IsNewUser;
 
     END TRY
     BEGIN CATCH
         IF @@TRANCOUNT > 0
             ROLLBACK TRANSACTION;
-        THROW;
+        THROW; -- 重新抛出捕获的错误
     END CATCH
 END;
 GO

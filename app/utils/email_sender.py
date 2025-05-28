@@ -80,7 +80,7 @@ async def send_email_aliyun(recipient_email: str, subject: str, body: str):
             # 您的Access Key Secret
             access_key_secret=access_key_secret,
             # Endpoint 请参考阿里云官方文档，这里使用泛型域名，会自动解析到对应区域
-            endpoint=f'dm.{region}.aliyuncs.com'
+            endpoint='dm.aliyuncs.com'
         )
 
         # 创建 Direct Mail 客户端
@@ -132,13 +132,13 @@ async def send_student_verification_email(recipient_email: str, verification_url
         verification_url: 包含验证令牌的魔术链接URL。
         expire_minutes: 魔术链接的过期时间（分钟）。
     """
-    subject = "学生身份验证邮件"
+    subject = "思源淘学生身份验证邮件"
     body = (
         f"亲爱的用户,\n\n请点击以下链接验证您的学生身份：\n{verification_url}\n\n"
         f"请注意，此链接将在 {expire_minutes} 分钟后过期。\n\n"
         f"如果您没有请求此验证，请忽略本邮件。\n\n"
         "祝您使用愉快！\n"
-        "您的应用团队" # Replace '您的应用团队' with your app name/team
+        "思源淘开发团队" 
     )
 
     if settings.EMAIL_PROVIDER == "smtp":

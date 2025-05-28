@@ -302,7 +302,7 @@ class UserService:
             if verification_token:
                  # 2. Call email sending tool
                  # The URL needs to be your frontend verification page URL
-                 frontend_verification_url = f"{settings.FRONTEND_DOMAIN}/verify-email?token={verification_token}" # Use the general verify-email route
+                 frontend_verification_url = f"{str(settings.FRONTEND_DOMAIN).rstrip('/')}/verify-email?token={verification_token}" # Use the general verify-email route
                  await send_student_verification_email(email, frontend_verification_url, settings.MAGIC_LINK_EXPIRE_MINUTES)
 
                  logger.info(f"Verification email sent to {email} for user {user_id}.")

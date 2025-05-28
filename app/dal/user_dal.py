@@ -605,87 +605,48 @@ class UserDAL:
          """
          logger.debug(
              f"DAL: Requesting verification link for user_id: {user_id}, email: {email}")
-         # Assuming sp_RequestMagicLink can handle receiving user_id and email
-         # and updates user.Email if user_id is provided and email is not null.
-         # If SP only takes email, we might need an explicit update call before calling the SP.
-         # Let's assume SP can take both for flexibility or takes email and handles lookup/update internally.
-         # Based on sp_RequestMagicLink, it takes email and either creates a new user or updates existing.
-         # We need to adjust the SP call if we want to pass user_id for an *existing* user explicitly requesting verification.
+         # Assuming sp_RequestMagicLink now takes @userId (optional) and @email (required)
+         sql = "{CALL sp_RequestMagicLink(?, ?)}" # New SP signature
+         params = (email, user_id) # Correct the order to match SP definition (@email, @userId)
 
-         # Based on the existing sp_RequestMagicLink signature, it only takes @email.
-         # It handles user creation if email not found, or updates existing user's token.
-         # If the user is already logged in (we have user_id), and they are trying to verify a *new* email,
-         # the current sp_RequestMagicLink logic might not update the email for an *existing* user.
-         # It only updates the token/expiry for an existing user found by email.
+         logger.debug(f"Calling stored procedure: {sql} with params: {params}")
+         result = await self._execute_query(conn, sql, params, fetchone=True)
 
-         # To support logged-in users verifying a new email:
-         # Option 1: Modify sp_RequestMagicLink to accept user_id and email, update email if user_id matches and email is different/not null.
-         # Option 2: In Service layer, first call DAL to update user's email, then call DAL.request_verification_link with the new email.
+         # The DAL should handle cases like disabled account, email already verified etc.
+         # If result indicates success (e.g., a token was generated/sent), return a success message.
 
-         # Let's proceed with Option 2 for now, as it requires less change to the existing SP.
-         # The service layer will ensure the user's Email field is updated before calling this DAL method.
-         # So, this DAL method will simply call the existing SP which takes only email.
+         if result and isinstance(result, dict):
+             error_message = result.get('') or result.get('Error') or result.get('Message')
+             result_code = result.get('OperationResultCode')
 
-         if not email:
-              raise ValueError(
-                  "Email is required to request a verification link.")
+             if error_message:
+                 logger.warning(f"DAL: sp_RequestMagicLink failed for email {email}: SP returned error: {error_message}")
+                 if '您的账户已被禁用，无法登录。' in error_message or 'Account is disabled.' in error_message:
+                      # Or a more specific error
+                      raise ForbiddenError("Account is disabled.")
+                 if '邮件已存在' in error_message or 'Email already exists' in error_message:
+                       # This case is handled by the SP creating a new user or updating existing.
+                       # If it explicitly says email exists for *another* user and cannot be used?
+                       # The existing SP doesn't seem to have this specific check.
+                       # Rely on the SP's intended behavior for existing emails.
+                       pass  # Do not raise error for email existing if SP handled it gracefully
 
-         sql = "{CALL sp_RequestMagicLink(?)}"  # Existing SP signature
-         try:
-             # Use the injected execute_query function
-             # Ensure commit=True
-             result = await self._execute_query(conn, sql, (email,), fetchone=True)
+             if result_code is not None and result_code != 0:
+                 logger.warning(f"DAL: sp_RequestMagicLink for email {email} returned non-zero result code: {result_code}. Result: {result}")
+                 raise DALError(f"Stored procedure failed with result code: {result_code}")
 
-             logger.debug(
-                 f"DAL: sp_RequestMagicLink for email {email} returned: {result}")
+             # Stored procedure returns VerificationToken, UserID, IsNewUser on success
+             if all(key in result for key in ['VerificationToken', 'UserID', 'IsNewUser']):
+                 logger.info(f"DAL: Magic link requested successfully for email {email}.")
+                 return result # Return the dictionary
 
-             if result and isinstance(result, dict):
-                  error_message = result.get('') or result.get(
-                      'Error') or result.get('Message')
-                  result_code = result.get('OperationResultCode')
+             # If result is a dict but doesn't contain expected keys and no error message
+             logger.warning(f"DAL: sp_RequestMagicLink for email {email} returned unexpected dict format: {result}")
+             raise DALError("Request verification link failed: Unexpected response format from stored procedure.")
 
-                  if error_message:
-                       logger.warning(
-                           f"DAL: sp_RequestMagicLink failed for email {email}: SP returned error: {error_message}")
-                       if '您的账户已被禁用，无法登录。' in error_message or 'Account is disabled.' in error_message:
-                            # Or a more specific error
-                            raise ForbiddenError("Account is disabled.")
-                       if '邮件已存在' in error_message or 'Email already exists' in error_message:
-                             # This case is handled by the SP creating a new user or updating existing.
-                             # If it explicitly says email exists for *another* user and cannot be used?
-                             # The existing SP doesn't seem to have this specific check.
-                             # Rely on the SP's intended behavior for existing emails.
-                             pass  # Do not raise error for email existing if SP handled it gracefully
-
-                       raise DALError(
-                           f"Stored procedure error requesting verification link: {error_message}")
-
-                  if result_code is not None and result_code != 0:
-                      logger.warning(
-                          f"DAL: sp_RequestMagicLink for email {email} returned non-zero result code: {result_code}. Result: {result}")
-                      raise DALError(
-                          f"Stored procedure failed with result code: {result_code}")
-
-                  # Stored procedure returns VerificationToken, UserID, IsNewUser on success
-                  if all(key in result for key in ['VerificationToken', 'UserID', 'IsNewUser']):
-                       logger.info(
-                           f"DAL: Magic link requested successfully for email {email}.")
-                       return result  # Return the dictionary
-
-                  # If result is a dict but doesn't contain expected keys and no error message
-                  logger.warning(f"DAL: sp_RequestMagicLink for email {email} returned unexpected dict format: {result}")
-                  raise DALError("Request verification link failed: Unexpected response format from stored procedure.")
-
-             # If result is None or not a dict
-             logger.error(f"DAL: sp_RequestMagicLink for email {email} returned unexpected result: {result}")
-             raise DALError("Request verification link failed: Unexpected database response.")
-
-
-         except (ForbiddenError, DALError) as e:
-             raise e # Re-raise specific exceptions
-         except Exception as e:
-             logger.error(f"Error requesting verification link for email {email}: {e}")
-             raise DALError(f"Database error during requesting verification link: {e}") from e
+         # If result is None or not a dict
+         logger.error(f"DAL: sp_RequestMagicLink for email {email} returned unexpected result: {result}")
+         raise DALError("Request verification link failed: Unexpected database response.")
 
     async def verify_email(self, conn: pyodbc.Connection, token: UUID) -> dict:
          """验证邮箱，调用sp_VerifyMagicLink。"""
