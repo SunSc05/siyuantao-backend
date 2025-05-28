@@ -759,3 +759,101 @@ BEGIN
 
 END;
 GO
+
+-- sp_BatchReviewProducts: 添加批量审核逻辑
+DROP PROCEDURE IF EXISTS [sp_BatchReviewProducts];
+GO
+CREATE PROCEDURE [sp_BatchReviewProducts]
+    @productIds NVARCHAR(MAX), -- 逗号分隔的商品ID列表
+    @adminId UNIQUEIDENTIFIER, -- 管理员ID
+    @newStatus NVARCHAR(20),   -- 目标状态：'Active' 或 'Rejected'
+    @reason NVARCHAR(500) = NULL -- 拒绝原因（仅当状态为Rejected时需要）
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON; -- 自动回滚事务
+
+    -- 验证管理员权限
+    IF NOT EXISTS (SELECT 1 FROM [User] WHERE UserID = @adminId AND IsStaff = 1)
+    BEGIN
+        RAISERROR('无管理员权限', 16, 1);
+        RETURN;
+    END
+
+    -- 验证目标状态
+    IF @newStatus NOT IN ('Active', 'Rejected')
+    BEGIN
+        RAISERROR('无效状态，仅支持Active或Rejected', 16, 1);
+        RETURN;
+    END
+
+    -- 验证拒绝原因（若状态为Rejected）
+    IF @newStatus = 'Rejected' AND (@reason IS NULL OR LTRIM(RTRIM(@reason)) = '')
+    BEGIN
+        RAISERROR('拒绝商品必须提供原因', 16, 1);
+        RETURN;
+    END
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        -- 解析商品ID列表（使用STRING_SPLIT，需SQL Server 2016+）
+        DECLARE @productTable TABLE (ProductID UNIQUEIDENTIFIER);
+        INSERT INTO @productTable (ProductID)
+        SELECT TRY_CAST(value AS UNIQUEIDENTIFIER) 
+        FROM STRING_SPLIT(@productIds, ',') 
+        WHERE TRY_CAST(value AS UNIQUEIDENTIFIER) IS NOT NULL; -- 过滤无效ID
+
+        -- 检查待审核商品是否存在且状态为PendingReview
+        IF NOT EXISTS (
+            SELECT 1 
+            FROM @productTable pt
+            JOIN [Product] p ON pt.ProductID = p.ProductID
+            WHERE p.Status = 'PendingReview'
+        )
+        BEGIN
+            RAISERROR('部分商品不存在或状态不可审核', 16, 1);
+            ROLLBACK TRANSACTION;
+            RETURN;
+        END
+
+        -- 更新商品状态
+        UPDATE p
+        SET 
+            Status = @newStatus,
+            ApprovedBy = @adminId,
+            ApprovedTime = GETDATE()
+        FROM [Product] p
+        JOIN @productTable pt ON p.ProductID = pt.ProductID
+        WHERE p.Status = 'PendingReview'; -- 仅允许审核PendingReview状态的商品
+
+        -- 批量插入系统通知
+        INSERT INTO [SystemNotification] (NotificationID, UserID, Title, Content, CreateTime, IsRead)
+        SELECT 
+            NEWID(),
+            p.OwnerID,
+            CASE @newStatus 
+                WHEN 'Active' THEN '商品审核通过'
+                ELSE '商品审核未通过'
+            END,
+            CASE @newStatus 
+                WHEN 'Active' THEN CONCAT('您的商品 "', p.ProductName, '" 已审核通过，当前状态为在售。')
+                ELSE CONCAT('您的商品 "', p.ProductName, '" 未通过审核，原因：', @reason)
+            END,
+            GETDATE(),
+            0
+        FROM [Product] p
+        JOIN @productTable pt ON p.ProductID = pt.ProductID;
+
+        COMMIT TRANSACTION;
+
+        -- 返回成功结果
+        SELECT COUNT(*) AS SuccessCount FROM @productTable;
+
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END;
+GO
