@@ -282,11 +282,12 @@ class UserService:
             # IntegrityError for the definitive check during token generation.
             # For now, let's rely on the DAL's handling of duplicate emails.
 
-            # 1. Update user's email in the database
-            # Use a separate DAL method to update email if needed, or modify request_verification_link SP.
-            # Assuming sp_RequestMagicLink handles updating the email if it's null or different.
-            # If SP doesn't update, we'd need an explicit update call here before requesting the link.
-            # Let's modify the DAL method and SP call slightly to include the email.
+            # 1. Update user's email in the database before requesting the verification link.
+            # Reuse the update_user_profile method from DAL.
+            logger.debug(f"Attempting to update email for user ID {user_id} to {email}")
+            # Call DAL to update user profile, only providing the email
+            await self.user_dal.update_user_profile(conn, user_id, email=email)
+            logger.debug(f"Email updated for user ID {user_id}")
 
             # Call DAL to request verification link. Pass user_id and email.
             # The DAL method should update the email field if necessary and generate/store the token.

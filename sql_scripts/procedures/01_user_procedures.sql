@@ -150,13 +150,15 @@ CREATE PROCEDURE [sp_UpdateUserProfile]
     @major NVARCHAR(100) = NULL,
     @avatarUrl NVARCHAR(255) = NULL,
     @bio NVARCHAR(500) = NULL,
-    @phoneNumber NVARCHAR(20) = NULL
+    @phoneNumber NVARCHAR(20) = NULL,
+    @email NVARCHAR(254) = NULL -- Add optional email parameter
 AS
 BEGIN
     SET NOCOUNT ON;
 
     DECLARE @existingUserCount INT;
     DECLARE @existingPhoneCount INT;
+    DECLARE @existingEmailCount INT; -- Add email existence check variable
 
     -- 检查用户是否存在
     SELECT @existingUserCount = COUNT(1) FROM [User] WHERE UserID = @userId;
@@ -177,6 +179,17 @@ BEGIN
         END
     END
 
+    -- 如果提供了邮箱地址，检查邮箱地址是否已被其他用户使用
+    IF @email IS NOT NULL AND LTRIM(RTRIM(@email)) <> ''
+    BEGIN
+        SELECT @existingEmailCount = COUNT(1) FROM [User] WHERE Email = @email AND UserID <> @userId;
+        IF @existingEmailCount > 0
+        BEGIN
+            RAISERROR('此邮箱已被其他用户使用。', 16, 1);
+            RETURN;
+        END
+    END
+
     BEGIN TRY
         BEGIN TRANSACTION;
 
@@ -186,7 +199,8 @@ BEGIN
             Major = ISNULL(@major, Major), -- 如果传入NULL，保留原值
             AvatarUrl = ISNULL(@avatarUrl, AvatarUrl),
             Bio = ISNULL(@bio, Bio),
-            PhoneNumber = ISNULL(@phoneNumber, PhoneNumber)
+            PhoneNumber = ISNULL(@phoneNumber, PhoneNumber),
+            Email = ISNULL(@email, Email) -- Update email if provided
         WHERE UserID = @userId;
 
         -- 检查是否更新成功 (尽管通常UPDATE成功不会抛异常，但可以检查ROWCOUNT)

@@ -241,12 +241,12 @@ class UserDAL:
             # Catch any other unexpected exceptions during the DAL operation
             raise DALError(f"Database error during user creation: {e}") from e
 
-    async def update_user_profile(self, conn: pyodbc.Connection, user_id: UUID, *, major: Optional[str] = None, avatar_url: Optional[str] = None, bio: Optional[str] = None, phone_number: Optional[str] = None) -> dict | None:
+    async def update_user_profile(self, conn: pyodbc.Connection, user_id: UUID, *, major: Optional[str] = None, avatar_url: Optional[str] = None, bio: Optional[str] = None, phone_number: Optional[str] = None, email: Optional[str] = None) -> dict | None:
         """更新现有用户的个人资料，返回更新后的用户数据。"""
         logger.debug(
             # Add logging
             f"DAL: Attempting to update profile for user ID: {user_id}")
-        sql = "{CALL sp_UpdateUserProfile(?, ?, ?, ?, ?)}"
+        sql = "{CALL sp_UpdateUserProfile(?, ?, ?, ?, ?, ?)}"
         try:
             # Add logging
             logger.debug(
@@ -254,7 +254,7 @@ class UserDAL:
             # sp_UpdateUserProfile should return the updated user data (a dict) or indicate error/not found
             result = await self._execute_query(
                 conn, sql,
-                (user_id, major, avatar_url, bio, phone_number),
+                (user_id, major, avatar_url, bio, phone_number, email),
                 fetchone=True
             )
             # Add logging
