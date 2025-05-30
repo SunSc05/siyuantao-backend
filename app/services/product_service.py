@@ -1,7 +1,7 @@
 from typing import List, Dict, Optional
-from .dal.product_dal import ProductDAL
+from ..dal.product_dal import ProductDAL
 from .dal.product_image_dal import ProductImageDAL
-from .dal.user_favorite_dal import UserFavoriteDAL
+from ..dal.user_favorite_dal import UserFavoriteDAL
 
 class ProductService:
     """

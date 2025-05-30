@@ -1,10 +1,10 @@
 from fastapi import APIRouter, Depends, HTTPException
-from ...services.product_service import ProductService
-from ...dal.product_dal import ProductDAL
-from ...dal.product_image_dal import ProductImageDAL
-from ...dal.user_favorite_dal import UserFavoriteDAL
-from ...schemas.product import ProductCreate, ProductUpdate
-from ...dependencies import get_db, get_current_user, get_current_active_admin_user
+from ..services.product_service import ProductService
+from ..dal.product_dal import ProductDAL
+from ..dal.product_image_dal import ProductImageDAL
+from ..dal.user_favorite_dal import UserFavoriteDAL
+from ..schemas.product import ProductCreate, ProductUpdate
+from ..dependencies import get_db, get_current_user, get_current_active_admin_user
 
 router = APIRouter()
 

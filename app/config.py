@@ -7,7 +7,7 @@ class Settings(BaseSettings):
     DATABASE_NAME: str
     DATABASE_UID: str
     DATABASE_PWD: str
-
+    
     # Add JWT settings
     SECRET_KEY: str
     ALGORITHM: str = "HS256"
