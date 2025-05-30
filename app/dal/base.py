@@ -124,3 +124,38 @@ def transaction(conn: pyodbc.Connection):
             await asyncio.get_event_loop().run_in_executor(None, conn.rollback)
             raise
     return _transaction_context()
+
+
+async def execute_non_query(conn: pyodbc.Connection, sql: str, params: tuple = ()) -> int:
+    """
+    Executes a SQL non-query (INSERT, UPDATE, DELETE) with the given parameters asynchronously.
+    Returns the number of rows affected.
+    """
+    loop = asyncio.get_event_loop()
+    cursor = None
+    try:
+        cursor = await loop.run_in_executor(None, conn.cursor)
+        logger.debug(f"Executing non-query SQL: {sql} with params: {params}")
+
+        processed_params = tuple(str(p) if isinstance(p, UUID) else p for p in params) if params else None
+
+        if processed_params is not None:
+            await loop.run_in_executor(None, functools.partial(cursor.execute, sql, processed_params))
+        else:
+            await loop.run_in_executor(None, functools.partial(cursor.execute, sql))
+
+        rowcount = await loop.run_in_executor(None, lambda: cursor.rowcount)
+        await loop.run_in_executor(None, conn.commit)
+        return rowcount
+
+    except pyodbc.Error as e:
+        await loop.run_in_executor(None, conn.rollback)
+        logger.error(f"Database error executing non-query SQL: {sql} - {e}")
+        raise DALError(f"Database non-query operation failed: {e}") from e
+    except Exception as e:
+        await loop.run_in_executor(None, conn.rollback)
+        logger.error(f"An unexpected error occurred during non-query execution: {e}")
+        raise DALError(f"An unexpected error occurred during non-query execution: {e}") from e
+    finally:
+        if cursor:
+            await loop.run_in_executor(None, cursor.close)

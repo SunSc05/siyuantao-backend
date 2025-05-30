@@ -24,9 +24,12 @@ except ImportError:
 
 # 导入所有模块路由
 from app.routers import users, auth # 暂时只导入已存在的路由
+from app.routers import users, auth, order # 暂时只导入已存在的路由
+from app.routers import evaluation # 新增：导入评价路由
 from app.routers import product_routes  # 添加商品路由
 # from app.routers import  orders # 这些文件后面会创建
 from app.routers import upload_routes # 导入图片上传路由
+# from app.routers import products, orders # 这些文件后面会创建
 
 # Define a comprehensive logging configuration dictionary
 LOGGING_CONFIG = {
@@ -158,11 +161,6 @@ app.include_router(product_routes.router, prefix="/api/v1/products", tags=["Prod
 # app.include_router(orders.router, prefix="/api/v1/orders", tags=["Orders"]) # 暂时注释掉未创建的路由
 app.include_router(auth.router, prefix="/api/v1")
 # ... 注册其他模块路由
-app.include_router(upload_routes.router) # 注册图片上传路由
-
-# Configure static file serving for uploaded images
-# The 'uploads' directory will be served at the '/uploads' URL path
-app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 @app.get("/")
 async def root():
@@ -177,4 +175,4 @@ async def startup_event():
 @app.on_event("shutdown")
 async def shutdown_event():
     logger.info("Application shutdown...") # Changed from print to logger
-    # 可以在这里关闭数据库连接池等 
+    # 可以在这里关闭数据库连接池等

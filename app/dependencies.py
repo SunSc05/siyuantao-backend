@@ -13,6 +13,11 @@ from app.dal.connection import get_db_connection # 导入数据库连接依赖
 from app.dal.user_dal import UserDAL # 导入UserDAL
 from app.services.user_service import UserService # 导入UserService
 from app.dal.base import execute_query # Import execute_query from base.py
+from app.dal.orders_dal import OrdersDAL # 导入 OrdersDAL
+from app.services.order_service import OrderService # 导入 OrderService
+from app.dal.evaluation_dal import EvaluationDAL # 导入 EvaluationDAL
+from app.services.evaluation_service import EvaluationService # 导入 EvaluationService
+# from app.utils.auth import verify_password, get_password_hash, create_access_token # 如果需要在这里处理token，需要导入
 from app.dal.product_dal import ProductDAL, ProductImageDAL, UserFavoriteDAL # Import ProductDAL, ProductImageDAL, UserFavoriteDAL
 from app.services.product_service import ProductService # Import ProductService
 # from app.utils.auth import verify_password, get_password_hash, create_access_token # 如果需要在这里处理token，需要导入
@@ -52,20 +57,6 @@ async def get_user_service() -> UserService: # No longer needs conn here
     service = UserService(user_dal=user_dal_instance)
     logger.debug("UserService instance created.") # Add logging
     return service # Return the UserService instance
-
-# Dependency to get a ProductService instance
-# Inject execute_query into DALs when creating ProductService
-async def get_product_service() -> ProductService:
-    """Dependency injector for ProductService."""
-    logger.debug("Attempting to get ProductService instance.")
-    # Instantiate ProductDAL, ProductImageDAL, UserFavoriteDAL, injecting execute_query
-    # Note: ProductService constructor expects execute_query_func directly, not DAL instances
-    # Need to update ProductService __init__ or adjust this dependency.
-    # Checking ProductService __init__, it *does* expect execute_query_func.
-    # So, pass execute_query directly.
-    service = ProductService(execute_query_func=execute_query)
-    logger.debug("ProductService instance created.")
-    return service
 
 # 从配置文件获取 JWT 密钥和算法
 SECRET_KEY = settings.SECRET_KEY # Assumes settings is imported
@@ -165,4 +156,4 @@ async def get_current_super_admin_user(current_user: dict = Depends(get_current_
 # TODO: Implement admin authentication dependency get_current_active_admin_user
 # async def get_current_active_admin_user():
 #     # This will involve checking if the user is authenticated and is staff
-#     pass 
+#     pass
