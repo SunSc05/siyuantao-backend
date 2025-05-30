@@ -204,29 +204,29 @@
 ### 2.2 商品模块
 
 *   文件: `backend/src/modules/product/dal/product_dal.py`
-    *   `[ ] TODO:` `ProductDAL` 类定义，注入数据库连接池。
-    *   `[ ] TODO:` `create_product(...)`: 封装 `sp_CreateProduct`。
-    *   `[ ] TODO:` `update_product(...)`: 封装 `sp_UpdateProduct`。
-    *   `[ ] TODO:` `delete_product(...)`: 封装 `sp_DeleteProduct`。
-    *   `[ ] TODO:` `activate_product(...)`: 封装 `sp_ActivateProduct`。
-    *   `[ ] TODO:` `reject_product(...)`: 封装 `sp_RejectProduct`。
-    *   `[ ] TODO:` `withdraw_product(...)`: 封装 `sp_WithdrawProduct`。
-    *   `[ ] TODO:` `get_product_list(...)`: 封装 `sp_GetProductList`。
-    *   `[ ] TODO:` `get_product_by_id(...)`: 封装 `sp_GetProductById`。
-    *   `[ ] TODO:` `decrease_product_quantity(...)`: 封装 `sp_DecreaseProductQuantity`。
-    *   `[ ] TODO:` `increase_product_quantity(...)`: 封装 `sp_IncreaseProductQuantity`。
+    *   `[√] TODO:` `ProductDAL` 类定义，注入数据库连接池。
+    *   `[√] TODO:` `create_product(...)`: 封装 `sp_CreateProduct`。
+    *   `[√] TODO:` `update_product(...)`: 封装 `sp_UpdateProduct`。
+    *   `[√] TODO:` `delete_product(...)`: 封装 `sp_DeleteProduct`。
+    *   `[√] TODO:` `activate_product(...)`: 封装 `sp_ActivateProduct`。
+    *   `[√] TODO:` `reject_product(...)`: 封装 `sp_RejectProduct`。
+    *   `[√] TODO:` `withdraw_product(...)`: 封装 `sp_WithdrawProduct`。
+    *   `[√] TODO:` `get_product_list(...)`: 封装 `sp_GetProductList`。
+    *   `[√] TODO:` `get_product_by_id(...)`: 封装 `sp_GetProductById`。
+    *   `[√] TODO:` `decrease_product_quantity(...)`: 封装 `sp_DecreaseProductQuantity`。
+    *   `[√] TODO:` `increase_product_quantity(...)`: 封装 `sp_IncreaseProductQuantity`。
 *   文件: `backend/src/modules/product/dal/product_image_dal.py`
-    *   `[ ] TODO:` `ProductImageDAL` 类定义，注入数据库连接池。
-    *   `[ ] TODO:` `add_product_image(...)`: 封装图片插入逻辑。
-    *   `[ ] TODO:` `get_images_by_product_id(...)`: 封装 `sp_GetImagesByProduct`。
-    *   `[ ] TODO:` `delete_product_image(...)`: 封装图片删除逻辑。
+    *   `[√] TODO:` `ProductImageDAL` 类定义，注入数据库连接池。
+    *   `[√] TODO:` `add_product_image(...)`: 封装图片插入逻辑。
+    *   `[√] TODO:` `get_images_by_product_id(...)`: 封装 `sp_GetImagesByProduct`。
+    *   `[√] TODO:` `delete_product_image(...)`: 封装图片删除逻辑。
 *   文件: `backend/src/modules/product/dal/user_favorite_dal.py`
-    *   `[ ] TODO:` `UserFavoriteDAL` 类定义，注入数据库连接池。
-    *   `[ ] TODO:` `add_user_favorite(...)`: 封装 `sp_AddUserFavorite`.
-    *   `[ ] TODO:` `remove_user_favorite(...)`: 封装 `sp_RemoveUserFavorite`。
-    *   `[ ] TODO:` `get_user_favorite_products(...)`: 封装 `sp_GetUserFavoriteProducts`。
+    *   `[√] TODO:` `UserFavoriteDAL` 类定义，注入数据库连接池。
+    *   `[√] TODO:` `add_user_favorite(...)`: 封装 `sp_AddUserFavorite`.
+    *   `[√] TODO:` `remove_user_favorite(...)`: 封装 `sp_RemoveUserFavorite`。
+    *   `[√] TODO:` `get_user_favorite_products(...)`: 封装 `sp_GetUserFavoriteProducts`。
 *   文件: `backend/tests/modules/product/test_product_dal.py`
-    *   `[ ] TODO:` 编写 `ProductDAL`、`ProductImageDAL`、`UserFavoriteDAL` 的单元测试。
+    *   `[√] TODO:` 编写 `ProductDAL`、`ProductImageDAL`、`UserFavoriteDAL` 的单元测试。
 
 ### 2.3 评价模块
 
@@ -321,20 +321,20 @@
 ### 3.2 商品模块
 
 *   文件: `backend/src/modules/product/services/product_service.py`
-    *   `[ ] TODO:` `ProductService` 类定义，注入 `ProductDAL`, `ProductImageDAL`, `UserFavoriteDAL`。
-    *   `[ ] TODO:` `create_product(...)`: 业务逻辑（数据验证、调用 `ProductDAL.create_product`，处理图片上传并调用 `ProductImageDAL.add_product_image`）。
-    *   `[ ] TODO:` `update_product(...)`: 业务逻辑（数据验证、权限检查、调用 `ProductDAL.update_product`，处理图片更新）。
-    *   `[ ] TODO:` `delete_product(...)`: 业务逻辑（权限检查、调用 `ProductDAL.delete_product`）。
-    *   `[ ] TODO:` `activate_product(...)`: 业务逻辑（管理员权限检查、调用 `ProductDAL.activate_product`）。
-    *   `[ ] TODO:` `reject_product(...)`: 业务逻辑（管理员权限检查、调用 `ProductDAL.reject_product`）。
-    *   `[ ] TODO:` `withdraw_product(...)`: 业务逻辑（权限检查、调用 `ProductDAL.withdraw_product`）。
-    *   `[ ] TODO:` `get_product_list(...)`: 业务逻辑（调用 `ProductDAL.get_product_list`，可能包含数据转换或聚合图片信息）。
-    *   `[ ] TODO:` `get_product_detail(...)`: 业务逻辑（调用 `ProductDAL.get_product_by_id` 和 `ProductImageDAL.get_images_by_product_id`，整合商品和图片信息）。
-    *   `[ ] TODO:` `add_favorite(...)`: 业务逻辑（调用 `UserFavoriteDAL.add_user_favorite`，处理重复收藏异常）。
-    *   `[ ] TODO:` `remove_favorite(...)`: 业务逻辑（调用 `UserFavoriteDAL.remove_user_favorite`）。
-    *   `[ ] TODO:` `get_user_favorites(...)`: 业务逻辑（调用 `UserFavoriteDAL.get_user_favorite_products`）。
+    *   `[√] TODO:` `ProductService` 类定义，注入 `ProductDAL`, `ProductImageDAL`, `UserFavoriteDAL`。
+    *   `[√] TODO:` `create_product(...)`: 业务逻辑（数据验证、调用 `ProductDAL.create_product`，处理图片上传并调用 `ProductImageDAL.add_product_image`）。
+    *   `[√] TODO:` `update_product(...)`: 业务逻辑（数据验证、权限检查、调用 `ProductDAL.update_product`，处理图片更新）。
+    *   `[√] TODO:` `delete_product(...)`: 业务逻辑（权限检查、调用 `ProductDAL.delete_product`）。
+    *   `[√] TODO:` `activate_product(...)`: 业务逻辑（管理员权限检查、调用 `ProductDAL.activate_product`）。
+    *   `[√] TODO:` `reject_product(...)`: 业务逻辑（管理员权限检查、调用 `ProductDAL.reject_product`）。
+    *   `[√] TODO:` `withdraw_product(...)`: 业务逻辑（权限检查、调用 `ProductDAL.withdraw_product`）。
+    *   `[√] TODO:` `get_product_list(...)`: 业务逻辑（调用 `ProductDAL.get_product_list`，可能包含数据转换或聚合图片信息）。
+    *   `[√] TODO:` `get_product_detail(...)`: 业务逻辑（调用 `ProductDAL.get_product_by_id` 和 `ProductImageDAL.get_images_by_product_id`，整合商品和图片信息）。
+    *   `[√] TODO:` `add_favorite(...)`: 业务逻辑（调用 `UserFavoriteDAL.add_user_favorite`，处理重复收藏异常）。
+    *   `[√] TODO:` `remove_favorite(...)`: 业务逻辑（调用 `UserFavoriteDAL.remove_user_favorite`）。
+    *   `[√] TODO:` `get_user_favorites(...)`: 业务逻辑（调用 `UserFavoriteDAL.get_user_favorite_products`）。
 *   文件: `backend/tests/modules/product/test_product_service.py`
-    *   `[ ] TODO:` 编写 `ProductService` 的单元测试。
+    *   `[√] TODO:` 编写 `ProductService` 的单元测试。
 
 ### 3.3 评价模块
 
@@ -434,20 +434,20 @@
 ### 4.2 商品接口
 
 *   文件: `backend/src/modules/product/api/product_routes.py`
-    *   `[ ] TODO:` `APIRouter` 定义。
-    *   `[ ] TODO:` `POST /api/v1/products`: 发布商品 (依赖 `get_current_user` 认证，调用 `ProductService.create_product`)。
-    *   `[ ] TODO:` `PUT /api/v1/products/{product_id}`: 编辑商品 (依赖 `get_current_user` 认证，调用 `ProductService.update_product`)。
-    *   `[ ] TODO:` `DELETE /api/v1/products/{product_id}`: 删除商品 (依赖 `get_current_user` 或 `get_current_active_admin_user` 认证，调用 `ProductService.delete_product`)。
-    *   `[ ] TODO:` `GET /api/v1/products`: 获取商品列表（带分页、筛选、搜索参数，调用 `ProductService.get_product_list`)。
-    *   `[ ] TODO:` `GET /api/v1/products/{product_id}`: 获取商品详情 (调用 `ProductService.get_product_detail`)。
-    *   `[ ] TODO:` `PUT /api/v1/products/{product_id}/status/activate`: 管理员激活商品 (依赖 `get_current_active_admin_user` 认证，调用 `ProductService.activate_product`)。
-    *   `[ ] TODO:` `PUT /api/v1/products/{product_id}/status/reject`: 管理员拒绝商品 (依赖 `get_current_active_admin_user` 认证，调用 `ProductService.reject_product`)。
-    *   `[ ] TODO:` `PUT /api/v1/products/{product_id}/status/withdraw`: 商品拥有者下架商品 (依赖 `get_current_user` 认证，调用 `ProductService.withdraw_product`)。
+    *   `[√] TODO:` `APIRouter` 定义。
+    *   `[√] TODO:` `POST /api/v1/products`: 发布商品 (依赖 `get_current_user` 认证，调用 `ProductService.create_product`)。
+    *   `[√] TODO:` `PUT /api/v1/products/{product_id}`: 编辑商品 (依赖 `get_current_user` 认证，调用 `ProductService.update_product`)。
+    *   `[√] TODO:` `DELETE /api/v1/products/{product_id}`: 删除商品 (依赖 `get_current_user` 或 `get_current_active_admin_user` 认证，调用 `ProductService.delete_product`)。
+    *   `[√] TODO:` `GET /api/v1/products`: 获取商品列表（带分页、筛选、搜索参数，调用 `ProductService.get_product_list`)。
+    *   `[√] TODO:` `GET /api/v1/products/{product_id}`: 获取商品详情 (调用 `ProductService.get_product_detail`)。
+    *   `[√] TODO:` `PUT /api/v1/products/{product_id}/status/activate`: 管理员激活商品 (依赖 `get_current_active_admin_user` 认证，调用 `ProductService.activate_product`)。
+    *   `[√] TODO:` `PUT /api/v1/products/{product_id}/status/reject`: 管理员拒绝商品 (依赖 `get_current_active_admin_user` 认证，调用 `ProductService.reject_product`)。
+    *   `[√] TODO:` `PUT /api/v1/products/{product_id}/status/withdraw`: 商品拥有者下架商品 (依赖 `get_current_user` 认证，调用 `ProductService.withdraw_product`)。
 *   文件: `backend/src/modules/product/api/favorite_routes.py`
-    *   `[ ] TODO:` `APIRouter` 定义。
-    *   `[ ] TODO:` `POST /api/v1/favorites/{product_id}`: 添加收藏 (依赖 `get_current_user` 认证，调用 `ProductService.add_favorite`)。
-    *   `[ ] TODO:` `DELETE /api/v1/favorites/{product_id}`: 移除收藏 (依赖 `get_current_user` 认证，调用 `ProductService.remove_favorite`)。
-    *   `[ ] TODO:` `GET /api/v1/favorites`: 获取用户收藏列表 (依赖 `get_current_user` 认证，调用 `ProductService.get_user_favorites`)。
+    *   `[√] TODO:` `APIRouter` 定义。
+    *   `[√] TODO:` `POST /api/v1/favorites/{product_id}`: 添加收藏 (依赖 `get_current_user` 认证，调用 `ProductService.add_favorite`)。
+    *   `[√] TODO:` `DELETE /api/v1/favorites/{product_id}`: 移除收藏 (依赖 `get_current_user` 认证，调用 `ProductService.remove_favorite`)。
+    *   `[√] TODO:` `GET /api/v1/favorites`: 获取用户收藏列表 (依赖 `get_current_user` 认证，调用 `ProductService.get_user_favorites`)。
 *   文件: `backend/tests/modules/product/test_product_api.py`
     *   `[ ] TODO:` 编写商品 API 接口的集成测试。
 *   文件: `backend/tests/modules/product/test_favorite_api.py`
