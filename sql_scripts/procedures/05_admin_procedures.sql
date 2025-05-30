@@ -447,6 +447,7 @@ BEGIN
         Status AS 账户状态,
         Credit AS 信用分,
         IsStaff AS 是否管理员,
+        IsSuperAdmin AS 是否超级管理员,
         IsVerified AS 是否已认证,
         Major AS 专业,
         Email AS 邮箱,

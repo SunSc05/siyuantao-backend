@@ -87,7 +87,8 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
     user_payload = {
         "user_id": user_uuid, # Return UUID object consistent with test mocks
         "is_staff": payload.get("is_staff", False),
-        "is_verified": payload.get("is_verified", False) # Include verification status
+        "is_verified": payload.get("is_verified", False), # Include verification status
+        "is_super_admin": payload.get("is_super_admin", False) # Include super admin status
     }
     
     # Optional: Add a quick check if the user actually exists in the DB if needed for stricter security,
@@ -120,6 +121,16 @@ async def get_current_authenticated_user(current_user: dict = Depends(get_curren
 
     # If checks pass, return the user dictionary payload
     return current_user # Return the user dict (containing user_id, is_staff, is_verified)
+
+# New dependency to get the current active user (only if super admin)
+async def get_current_super_admin_user(current_user: dict = Depends(get_current_user)):
+    # Check if the user exists and has the is_super_admin flag set
+    logger.debug(f"get_current_super_admin_user received current_user: {current_user}") # Add logging
+    is_super_admin = current_user.get('is_super_admin', False) # Get the flag
+    logger.debug(f"get_current_super_admin_user check result: {is_super_admin}") # Add logging
+    if current_user is None or not is_super_admin:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="需要超级管理员权限")
+    return current_user # Return the user dict
 
 # TODO: Add get_db_connection dependency injector (Already done by importing get_db_connection)
 # TODO: Implement authentication dependency get_current_user (Done, adjusted return type)

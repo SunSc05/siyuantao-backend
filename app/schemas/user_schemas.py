@@ -45,6 +45,7 @@ class UserResponseSchema(BaseModel):
     status: str = Field(..., description="账户状态")
     credit: int = Field(..., description="信用分")
     is_staff: bool = Field(..., description="是否管理员")
+    is_super_admin: bool = Field(..., description="是否超级管理员")
     is_verified: bool = Field(..., description="是否已认证")
     major: Optional[str] = Field(None, description="专业")
     avatar_url: Optional[str] = Field(None, description="头像URL")

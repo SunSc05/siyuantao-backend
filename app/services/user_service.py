@@ -124,6 +124,7 @@ class UserService:
         user_id = user.get('UserID') # Assuming DAL returns 'UserID'
         is_staff = user.get('IsStaff', False) # Assuming DAL returns 'IsStaff'
         is_verified = user.get('IsVerified', False) # Assuming DAL returns 'IsVerified'
+        is_super_admin = user.get('IsSuperAdmin', False) # Get IsSuperAdmin from DAL result
 
         if not user_id:
              # This should not happen if DAL works correctly
@@ -134,7 +135,8 @@ class UserService:
             data={
                 "user_id": str(user_id), # Ensure user_id is string in token
                 "is_staff": is_staff,
-                "is_verified": is_verified # Include verification status in token
+                "is_verified": is_verified, # Include verification status in token
+                "is_super_admin": is_super_admin # Include super admin status in token
             },
             expires_delta=access_token_expires
         )
@@ -252,15 +254,65 @@ class UserService:
 
             logger.info(f"User deleted successfully with ID: {user_id}")
             return True
-        except (NotFoundError) as e:
-            logger.error(f"NotFoundError during user deletion for ID {user_id}: {e}")
-            raise e
-        except DALError as e:
-            logger.error(f"Database error during user deletion for ID {user_id}: {e}")
-            raise DALError(f"Database error during user deletion: {e}") from e
+        except (NotFoundError, DALError) as e:
+            logger.error(f"Error during user deletion for ID {user_id}: {e}")
+            raise e # Re-raise specific exceptions
         except Exception as e:
             logger.error(f"Unexpected error during user deletion for ID {user_id}: {e}")
             raise e
+
+    async def toggle_user_staff_status(self, conn: pyodbc.Connection, target_user_id: UUID, super_admin_id: UUID) -> bool:
+        """
+        Service layer function for super admin to toggle a user's is_staff status.
+        Ensures the target user is not the super admin themselves.
+        """
+        logger.info(f"Super admin {super_admin_id} attempting to toggle staff status for user ID: {target_user_id}")
+
+        # 1. Fetch the target user to get their current status and check if they are the super admin
+        logger.debug(f"Fetching target user {target_user_id}")
+        target_user = await self.user_dal.get_user_by_id(conn, target_user_id) # Assuming DAL gets IsSuperAdmin
+        logger.debug(f"Target user data: {target_user}")
+
+        if not target_user:
+            logger.warning(f"Toggle staff failed: Target user ID {target_user_id} not found.")
+            raise NotFoundError(f"User with ID {target_user_id} not found.")
+
+        # Prevent super admin from changing their own status
+        # We need to check if the target user is ALSO a super admin.
+        # Assuming DAL fetched IsSuperAdmin and it's available in target_user dict.
+        if target_user.get('IsSuperAdmin', False):
+             logger.warning(f"Toggle staff failed: Cannot change staff status of another super admin (ID: {target_user_id}).")
+             # Decide whether to raise ForbiddenError or a more specific error
+             raise ForbiddenError("无法更改超级管理员的管理员身份")
+
+        # 2. Determine the new is_staff status
+        # Correctly read the current_is_staff status using the key from the stored procedure
+        current_is_staff = target_user.get('是否管理员', False)
+        new_is_staff = not current_is_staff
+        logger.debug(f"Current IsStaff: {current_is_staff}, New IsStaff: {new_is_staff}")
+
+        # 3. Call DAL to update the IsStaff status
+        # We need a new DAL method for this specific update, or modify an existing one.
+        # Since updateUserProfile doesn't include IsStaff, let's add a dedicated DAL method.
+        # For now, let's assume a DAL method like update_user_staff_status exists.
+        # TODO: Implement DAL method update_user_staff_status
+
+        logger.debug(f"Calling DAL to update staff status for user ID: {target_user_id} to {new_is_staff}")
+        # Assuming DAL method takes conn, user_id, new_is_staff (boolean), and the admin_id performing the action
+        # The DAL method will need to handle the actual SQL UPDATE statement.
+        update_success = await self.user_dal.update_user_staff_status(conn, target_user_id, new_is_staff, super_admin_id)
+        logger.debug(f"DAL.update_user_staff_status returned: {update_success}")
+
+        if not update_success:
+             # DAL method should return True on success, False/raise on failure
+             logger.error(f"DAL reported staff status update failed for user ID: {target_user_id}")
+             raise DALError(f"Failed to update staff status in database for user ID: {target_user_id}")
+
+        logger.info(f"Super admin {super_admin_id} successfully toggled staff status for user ID {target_user_id} to {new_is_staff}")
+
+        # TODO: Optionally log the action or send a system notification to the affected user
+
+        return True # Indicate success
 
     async def request_verification_email(self, conn: pyodbc.Connection, user_id: UUID, email: str) -> dict:
         """
@@ -487,126 +539,69 @@ class UserService:
             logger.error(f"Unexpected error getting all users for admin {admin_id}: {e}")
             raise e
 
-    def _map_dal_keys_to_schema_keys(self, dal_user_data: dict) -> dict:
+    def _convert_dal_user_to_schema(self, dal_user_data: dict) -> UserResponseSchema:
         """
-        Maps keys from DAL (potentially with Chinese characters from SP output)
-        to keys expected by UserResponseSchema.
+        Helper to convert a dictionary row from DAL into a UserResponseSchema.
+        Handles potential None values and type conversions.
         """
         if not dal_user_data:
-            return {}
+            return None # Return None if input is None or empty
 
-        key_map = {
-            # Chinese keys from SP to English keys in UserResponseSchema
+        # Mapping dictionary from potential DAL keys (including Chinese from SP) to schema keys
+        # Using keys observed in the error log: '用户ID', '用户名', '账户状态', '信用分',
+        # '是否管理员', '是否超级管理员', '是否已认证', '专业', '邮箱', '头像URL',
+        # '个人简介', '手机号码', '注册时间'
+        key_mapping = {
             '用户ID': 'user_id',
             '用户名': 'username',
             '邮箱': 'email',
             '账户状态': 'status',
             '信用分': 'credit',
             '是否管理员': 'is_staff',
+            '是否超级管理员': 'is_super_admin',
             '是否已认证': 'is_verified',
             '专业': 'major',
             '头像URL': 'avatar_url',
             '个人简介': 'bio',
             '手机号码': 'phone_number',
             '注册时间': 'join_time',
-            'User ID': 'user_id', # Added English keys based on existing DAL SP output
-            'User Name': 'username',
-            'Email Address': 'email',
-            'Account Status': 'status',
-            'Credit Score': 'credit',
-            'Is Staff': 'is_staff',
-            'Is Verified': 'is_verified',
-            'Major Field': 'major',
-            'Avatar URL': 'avatar_url',
-            'Biography': 'bio',
-            'Phone Number': 'phone_number',
-            'Registration Time': 'join_time',
-            # English keys (if DAL already returns them correctly or for other SPs)
-            'UserID': 'user_id',
-            'UserName': 'username',
-            'Email': 'email',
-            'Status': 'status',
-            'Credit': 'credit',
-            'IsStaff': 'is_staff',
-            'IsVerified': 'is_verified',
-            'Major': 'major',
-            'AvatarUrl': 'avatar_url',
-            'Bio': 'bio',
-            'PhoneNumber': 'phone_number',
-            'JoinTime': 'join_time',
-            # Add other potential mappings if necessary
+            'LastLoginTime': 'last_login_time', # Keep this mapping in case it's used elsewhere
+            # Add any other potential DAL keys and their schema mapping here
         }
-        
-        mapped_data = {}
-        for dal_key, value in dal_user_data.items():
-            schema_key = key_map.get(dal_key, dal_key) # Use original key if not in map
-            
+
+        schema_data = {}
+        for dal_key, schema_key in key_mapping.items():
+            # Get value from dal_user_data using .get() for safety
+            value = dal_user_data.get(dal_key)
+
             # Handle specific type conversions if necessary
-            if schema_key == 'join_time' and isinstance(value, str):
-                try:
-                    # Attempt to parse if it's a string that needs conversion
-                    # Handle potential timezone info like 'Z' or '+00:00'
-                    if value:
-                         # Simple check for common ISO formats
-                         if '.' in value: # Contains microseconds
-                             value = value.split('.')[0] # Strip microseconds for simpler parsing
-                         if value.endswith('Z'):
-                             value = value[:-1] + '+00:00' # Replace Z with +00:00
-                         
-                         mapped_data[schema_key] = datetime.fromisoformat(value) if value else None
-                    else:
-                         mapped_data[schema_key] = None # Handle empty string for date
+            if schema_key in ['is_staff', 'is_super_admin', 'is_verified'] and value is not None:
+                 # Ensure boolean values are correctly interpreted (SQL Server BIT -> Python bool)
+                schema_data[schema_key] = bool(value)
+            elif schema_key == 'user_id' and value is not None:
+                 # Ensure UUID is treated correctly (should ideally be a UUID object or string)
+                 # Pydantic can handle UUID strings directly
+                 schema_data[schema_key] = str(value) if not isinstance(value, str) else value
+            elif schema_key in ['join_time', 'last_login_time'] and value is not None:
+                 # Ensure datetime is treated correctly
+                 # Pydantic can handle datetime objects directly. If it's a string,
+                 # Pydantic will attempt to parse it, but passing datetime objects is safer.
+                 # Assuming the DAL returns datetime objects directly or ISO 8601 strings.
+                 # If not, specific parsing might be needed here.
+                 schema_data[schema_key] = value
+            # Add other specific type conversions if required for other fields
 
-                except ValueError:
-                    logger.warning(f"Could not parse date string {value} for join_time. Keeping original.")
-                    mapped_data[schema_key] = value 
-            elif schema_key in ['is_staff', 'is_verified']:
-                 # Ensure boolean values are correctly interpreted
-                if isinstance(value, int): # SQL Server might return 0 or 1 for BIT
-                    mapped_data[schema_key] = bool(value)
-                elif isinstance(value, str): # Handle "True" / "False" strings if ever returned
-                    mapped_data[schema_key] = value.lower() == 'true'
-                else:
-                    mapped_data[schema_key] = value # Assume it's already a boolean
             else:
-                mapped_data[schema_key] = value
+                schema_data[schema_key] = value # For strings, ints, floats, None, etc.
 
-
-        # Ensure all required fields for UserResponseSchema are present, providing defaults if necessary
-        # This step is crucial if _convert_dal_user_to_schema directly uses this output for Pydantic model creation
-        # However, _convert_dal_user_to_schema seems to handle Pydantic model creation itself.
-        # So, just returning the mapped_data should be sufficient here.
-
-        return mapped_data
-
-    def _convert_dal_user_to_schema(self, dal_user_data: dict) -> UserResponseSchema:
-        """
-        Converts a user data dictionary from DAL to a UserResponseSchema object.
-        Handles key mapping and potential type conversions.
-        """
-        if not dal_user_data:
-            logger.warning("Attempted to convert empty DAL user data to schema.")
-            # Depending on strictness, could raise error or return a default UserResponseSchema
-            # For now, let's assume an error or that this case should be handled before calling
-            raise ValueError("Cannot convert empty DAL user data to schema.")
-
-        # First, map keys from DAL (potentially Chinese) to schema keys (English)
-        schema_compatible_data = self._map_dal_keys_to_schema_keys(dal_user_data)
-        
-        # Ensure all fields expected by UserResponseSchema are present or have defaults
-        # Pydantic will handle default values for Optional fields if they are missing
-        # For required fields, if they are missing after mapping, Pydantic will raise a validation error
-
+        # Create and return the Pydantic schema instance
         try:
-            # Create the Pydantic model instance
-            # Pydantic v2 uses model_validate or __pydantic_validator__.validate_python
-            # Or just direct instantiation if from_attributes=True and aliases are used correctly
-            user_schema_instance = UserResponseSchema.model_validate(schema_compatible_data)
-            return user_schema_instance
-        except Exception as e: # Catch Pydantic ValidationError or other model instantiation errors
-            logger.error(f"Error creating UserResponseSchema from data: {schema_compatible_data}. Error: {e}")
-            # Re-raise as a more generic error or handle as appropriate
-            # For now, let's re-raise to make it visible
-            raise DALError(f"Failed to convert DAL data to UserResponseSchema: {e}") from e
+            return UserResponseSchema(**schema_data)
+        except Exception as e:
+            logger.error(f"Error converting DAL user data to schema: {e}", exc_info=True)
+            logger.debug(f"DAL data: {dal_user_data}")
+            logger.debug(f"Schema data before validation: {schema_data}")
+            # Re-raise the exception after logging
+            raise # Re-raise the exception after logging
 
 # TODO: Add service functions for admin operations (get all users, disable/enable user etc.)

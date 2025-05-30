@@ -30,9 +30,8 @@ except ImportError:
 # 如果 .env 文件不在当前工作目录，需要指定路径
 load_dotenv()
 
-# 将项目根目录添加到Python路径 (如果需要导入项目内的其他模块)
-# BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-# sys.path.append(BASE_DIR)
+# Add the parent directory (backend/) to the Python path
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 # Setup logging
 log_dir = "logs"
@@ -177,15 +176,15 @@ def get_db_connection(db_name_override=None):
                         cursor.execute(create_user_sql)
                         logger.info(f"Database user '{user}' created.")
 
-                    # Add the user to the db_owner role for full permissions during initialization
-                    # Using ALTER ROLE is the modern way.
-                    add_role_sql = f"ALTER ROLE db_owner ADD MEMBER [{{user}}];"
-                    logger.info(f"Adding user '{user}' to db_owner role in '{{target_db_name}}'.")
-                    cursor.execute(add_role_sql)
-                    logger.info(f"User '{user}' added to db_owner role.")
+                        # Add the user to the db_owner role for full permissions during initialization
+                        # Using ALTER ROLE is the modern way.
+                        add_role_sql = f"ALTER ROLE db_owner ADD MEMBER [{{user}}];"
+                        logger.info(f"Adding user '{user}' to db_owner role in '{{target_db_name}}'.")
+                        cursor.execute(add_role_sql)
+                        logger.info(f"User '{user}' added to db_owner role.")
 
-                    master_conn.commit() # Commit these user/permission changes
-                    logger.info(f"User '{user}' permissions set up successfully in '{target_db_name}'.")
+                        master_conn.commit() # Commit these user/permission changes
+                        logger.info(f"User '{user}' permissions set up successfully in '{target_db_name}'.")
 
                 except pyodbc.Error as e:
                     logger.error(f"Error setting up user permissions in database '{{target_db_name}}': {e}")
@@ -339,43 +338,95 @@ def create_admin_users(conn):
     """
     为开发者创建管理员账户。
     """
-    logger.info("创建开发者管理员账户...")
+    logger.info("--- 开始创建开发者管理员账户 ---")
     cursor = conn.cursor()
+
+    # Explicitly clear the User table before inserting initial admin users
+    # This ensures a clean state and avoids conflicts with existing data, especially NULL email entries
+    try:
+        logger.info("  清空现有用户数据...")
+        cursor.execute("DELETE FROM [User]")
+        conn.commit()
+        logger.info("  现有用户数据已清空.")
+    except Exception as e:
+        logger.error(f"  清空用户数据失败: {e}")
+        # Depending on severity, you might want to sys.exit(1) here
+        # For now, we log and continue, but this might lead to further errors.
 
     admin_users = [
         {"username": "pxk", "email": "23301132@bjtu.edu.cn", "major": "软件工程", "phone": "13800000001"},
-        {"username": "cyq", "email": "23301003@bjtu.edu.cn", "major": "软件工程", "phone": "13800000002"},
-        {"username": "cy", "email": "23301002@bjtu.edu.cn", "major": "软件工程", "phone": "13800000003"},
+        {"username": "cyq", "email": "23301003@bjtu.edu.cn", "major": "计算机科学与技术", "phone": "13800000002"},
+        {"username": "cy", "email": "23301002@bjtu.edu.cn", "major": "计算机科学与技术", "phone": "13800000003"},
         {"username": "ssc", "email": "23301011@bjtu.edu.cn", "major": "软件工程", "phone": "13800000004"},
-        {"username": "zsq", "email": "23301027@bjtu.edu.cn", "major": "软件工程", "phone": "13800000005"},
+        {"username": "zsq", "email": "23301027@bjtu.edu.cn", "major": "人工智能", "phone": "13800000005"},
     ]
-
-    # 使用一个简单的固定密码哈希进行初始化 (仅用于开发环境)
-    # 在实际应用中，应使用安全的密码哈希算法
-    initial_password_hash = "admin123"
+    # You might need to fetch or define get_password_hash here if not globally available
+    from app.utils.auth import get_password_hash
 
     for user_data in admin_users:
         try:
-            # 检查用户是否已存在 (通过用户名或邮箱)
-            cursor.execute("SELECT COUNT(1) FROM [User] WHERE UserName = ? OR Email = ?", (user_data['username'], user_data['email']))
-            if cursor.fetchone()[0] == 0:
-                logger.info(f"  创建用户: {user_data['username']} ({user_data['email']})")
-                cursor.execute("""
-                    INSERT INTO [User] (UserName, Password, Email, Status, Credit, IsStaff, IsVerified, Major, PhoneNumber, JoinTime)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, GETDATE())
-                """, (user_data['username'], initial_password_hash, user_data['email'], 'Active', 100, 1, 1, user_data['major'], user_data['phone']))
-                conn.commit()
-            else:
-                logger.info(f"  用户 {user_data['username']} ({user_data['email']}) 已存在，跳过创建。")
+            # Refined Check: Check if user already exists by username or specific non-null email
+            check_query = "SELECT COUNT(1) FROM [User] WHERE UserName = ?"
+            check_params = (user_data['username'],)
 
-        except pyodbc.Error as ex:
-            sqlstate = ex.args[0]
-            logger.error(f"  创建用户 {user_data['username']} 失败: {ex}")
-            # 根据需要处理特定错误，例如用户名或邮箱重复的更详细提示
-            # if sqlstate == '23000': # Integrity constraint violation
-            #     logger.error("  用户创建失败：用户名或邮箱已存在。")
-            conn.rollback()
-            # 出错时是否应中止所有用户创建？这里选择继续尝试其他用户
+            if user_data.get('email'): # Only add email check if email is provided and not None
+                check_query += " OR Email = ?"
+                check_params += (user_data['email'],)
+
+            cursor.execute(check_query, check_params)
+            if cursor.fetchone()[0] == 0:
+                logger.info(f"  创建用户: {user_data['username']} ({user_data.get('email', '无邮箱')})") # Log email presence
+
+                # Determine IsStaff and IsSuperAdmin status
+                is_staff_value = 1  # Set all users in admin_users list as staff
+                is_super_admin_value = 0 # Default to not super admin
+
+                # Set pxk as Super Admin based on email
+                if user_data.get('email') == '23301132@bjtu.edu.cn':
+                    is_super_admin_value = 1
+
+                hashed_password = get_password_hash("password123") # Use a default password
+
+                # Insert the user
+                cursor.execute("""
+                    INSERT INTO [User] (UserName, Password, Email, Status, Credit, IsStaff, IsVerified, Major, PhoneNumber, JoinTime, IsSuperAdmin)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, GETDATE(), ?)
+                """, (
+                    user_data['username'],
+                    hashed_password,
+                    user_data.get('email'), # Pass email (can be None)
+                    'Active',
+                    100,
+                    is_staff_value,
+                    1, # Assume admin users are verified for simplicity in init
+                    user_data.get('major'), # Pass major (can be None)
+                    user_data['phone'],
+                    is_super_admin_value
+                ))
+                conn.commit() # Commit after each user insertion
+                logger.info(f"  用户 {user_data['username']} 创建成功.")
+            else:
+                logger.info(f"  用户 {user_data['username']} ({user_data.get('email', '无邮箱')}) 已存在，跳过创建.")
+
+        except pyodbc.IntegrityError as e:
+             # Catch specific IntegrityError to provide more context
+             sqlstate = e.args[0]
+             error_message = e.args[1] if len(e.args) > 1 else str(e)
+             logger.error(f"  创建用户 {user_data['username']} 失败 (Integrity Error): {sqlstate} - {error_message}")
+             # You might choose to continue or break here based on desired behavior for duplicates
+             # For init script, logging and continuing might be acceptable for some duplicates
+             conn.rollback() # Rollback the failed insert transaction if not auto-rolled back
+        except Exception as e:
+            logger.error(f"  创建用户 {user_data['username']} 失败: {e}")
+            # Depending on how execute is configured, a rollback might be needed here too
+            if conn: # Check if connection is valid
+                 try:
+                      conn.rollback()
+                 except Exception as rb_e:
+                      logger.error(f"Error during rollback: {rb_e}")
+
+
+    logger.info("--- 开发者管理员账户创建完成 ---")
 
 def main():
     parser = argparse.ArgumentParser(description='数据库初始化脚本')

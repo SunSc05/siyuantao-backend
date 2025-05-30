@@ -949,4 +949,43 @@ class UserDAL:
         except Exception as e:
             # Catch any exception during query execution, including those from RAISERROR
             logger.error(f"DAL: Generic Error getting all users for admin {admin_id}: {e}")
-            raise DALError(f"Database error while fetching all users: {e}") from e 
+            raise DALError(f"Database error while fetching all users: {e}") from e
+
+    async def update_user_staff_status(self, conn: pyodbc.Connection, user_id: UUID, new_is_staff: bool, admin_id: UUID) -> bool:
+        """
+        Update the IsStaff status of a user.
+        Intended for use by super administrators.
+
+        Args:
+            conn: Database connection.
+            user_id: The UUID of the user whose status to update.
+            new_is_staff: The new boolean value for IsStaff.
+            admin_id: The UUID of the admin performing the action (for logging/auditing).
+
+        Returns:
+            True if the update was successful (1 row affected), False otherwise.
+
+        Raises:
+            DALError: If a database error occurs.
+        """
+        logger.debug(f"DAL: Updating staff status for user {user_id} to {new_is_staff} by admin {admin_id}")
+        try:
+            query = """
+                UPDATE [User]
+                SET IsStaff = ?
+                WHERE UserID = ?
+            """
+            params = (new_is_staff, user_id)
+            
+            # Use execute_query_func which handles commit/rollback and returns rowcount
+            rowcount = await self._execute_query(conn, query, params) # Removed fetch=False
+            logger.debug(f"DAL: Update staff status rowcount: {rowcount}")
+
+            return rowcount == 1
+
+        except pyodbc.Error as e:
+            logger.error(f"DAL Error updating user staff status for {user_id}: {e}")
+            raise DALError(f"Database error updating user staff status: {e}") from e
+        except Exception as e:
+            logger.error(f"Unexpected Error updating user staff status for {user_id}: {e}")
+            raise e 

@@ -1,5 +1,10 @@
 -- SQL Server 数据库表结构定义
 
+-- Explicitly drop table if it exists to ensure a clean start
+IF OBJECT_ID('dbo.[User]', 'U') IS NOT NULL
+    DROP TABLE dbo.[User];
+GO
+
 -- 1. 用户表 (User)
 -- 这是系统的核心用户表，包含用户的基本信息、核心状态以及校园认证状态。
 CREATE TABLE [User] (
@@ -11,6 +16,7 @@ CREATE TABLE [User] (
     [Credit] INT NOT NULL DEFAULT 100                       -- 用户信用分，默认为100
         CHECK ([Credit] BETWEEN 0 AND 100),                 -- 信用分必须在0到100之间
     [IsStaff] BIT NOT NULL DEFAULT 0,                       -- 是否为平台管理员：0=普通用户，1=管理员，默认为0
+    [IsSuperAdmin] BIT NOT NULL DEFAULT 0,                -- 是否超级管理员 (0=否, 1=是)
     [IsVerified] BIT NOT NULL DEFAULT 0,                    -- 校园身份是否已通过邮箱认证：0=未认证，1=已认证，默认为0 (通过邮箱魔术链接认证)
     [Major] NVARCHAR(100) NULL,                             -- 用户专业信息，可为空
     [Email] NVARCHAR(254) NULL,                  -- 用户认证邮箱，可以为空但认证后必须唯一（不能使用标准的唯一约束，标准唯一约束不允许重复的NULL值,修改为使用一个筛选的唯一索引。作为魔术链接认证的依据）
@@ -20,7 +26,7 @@ CREATE TABLE [User] (
     [JoinTime] DATETIME NOT NULL DEFAULT GETDATE(),         -- 用户注册时间，不允许为空，默认当前系统时间
     [VerificationToken] UNIQUEIDENTIFIER NULL,              -- 用于存储魔术链接认证的临时token
     [TokenExpireTime] DATETIME NULL,                         -- 用于存储token过期时间
-    [LastLoginTime] DATETIME2 NULL                         -- 用户最后登录时间
+    [LastLoginTime] DATETIME2 NULL,                         -- 用户最后登录时间
 );
 GO
 

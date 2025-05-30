@@ -23,7 +23,8 @@ from app.dependencies import (
     get_current_user, # For authenticated endpoints
     get_current_active_admin_user, # For admin-only endpoints
     get_user_service, # Dependency for UserService
-    get_current_authenticated_user # For active authenticated users
+    get_current_authenticated_user, # For active authenticated users
+    get_current_super_admin_user # Added for super admin authentication
 )
 from app.exceptions import NotFoundError, IntegrityError, DALError, AuthenticationError, ForbiddenError # Import necessary exceptions
 
@@ -248,20 +249,51 @@ async def change_user_status_by_id(
         
         await user_service.change_user_status(conn, user_id, status_update_data.status, admin_id) # Pass admin_id directly
         return {} # 204 No Content
-    except (NotFoundError, ForbiddenError, DALError, AuthenticationError) as e:
-         raise HTTPException(
-             status_code=status.HTTP_404_NOT_FOUND if isinstance(e, NotFoundError) else 
-                           (status.HTTP_403_FORBIDDEN if isinstance(e, ForbiddenError) else 
-                            (status.HTTP_401_UNAUTHORIZED if isinstance(e, AuthenticationError) else status.HTTP_500_INTERNAL_SERVER_ERROR)),
+    except (ForbiddenError, DALError, AuthenticationError, NotFoundError) as e:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN if isinstance(e, ForbiddenError) else 
+                          (status.HTTP_401_UNAUTHORIZED if isinstance(e, AuthenticationError) else 
+                            (status.HTTP_404_NOT_FOUND if isinstance(e, NotFoundError) else status.HTTP_500_INTERNAL_SERVER_ERROR)),
+            detail=str(e)
+        )
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"服务器内部错误: {e}")
+
+# Super Admin endpoint to toggle user staff status
+@router.put("/{user_id}/toggle_staff", status_code=status.HTTP_204_NO_CONTENT)
+async def toggle_user_staff_status(
+    user_id: UUID, # Path parameter
+    conn: pyodbc.Connection = Depends(get_db_connection),
+    user_service: UserService = Depends(get_user_service),
+    current_super_admin: dict = Depends(get_current_super_admin_user) # Requires super admin authentication
+):
+    """
+    超级管理员切换用户的管理员 (is_staff) 状态。
+    """
+    try:
+        super_admin_id = current_super_admin.get('UserID') or current_super_admin.get('user_id')
+        if not super_admin_id:
+             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="无法获取超级管理员用户信息")
+
+        # Call a new Service method to toggle is_staff status
+        # This service method will need to fetch the user, check current status, and update it.
+        await user_service.toggle_user_staff_status(conn, user_id, super_admin_id)
+
+        return {} # 204 No Content
+
+    except (NotFoundError, ForbiddenError, DALError) as e:
+        # Corrected error handling structure
+        status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
+        if isinstance(e, NotFoundError):
+            status_code = status.HTTP_404_NOT_FOUND
+        elif isinstance(e, ForbiddenError):
+            status_code = status.HTTP_403_FORBIDDEN
+        # DALError defaults to 500
+
+        raise HTTPException(
+             status_code=status_code,
              detail=str(e)
-         )
-    except ValueError as e:
-        # Catch ValueError from Service layer (e.g., invalid status, credit limit, missing reason)
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
-    except DALError as e:
-        # Catch DAL errors that were not specifically handled before (e.g., generic DAL issues)
-        # Ensure this is after more specific DAL-related exceptions like NotFoundError, IntegrityError.
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"数据库操作失败: {e}")
+        )
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"服务器内部错误: {e}")
 
