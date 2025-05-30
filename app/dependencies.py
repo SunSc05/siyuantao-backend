@@ -13,6 +13,10 @@ from app.dal.connection import get_db_connection # 导入数据库连接依赖
 from app.dal.user_dal import UserDAL # 导入UserDAL
 from app.services.user_service import UserService # 导入UserService
 from app.dal.base import execute_query # Import execute_query from base.py
+from app.dal.orders_dal import OrdersDAL # 导入 OrdersDAL
+from app.services.order_service import OrderService # 导入 OrderService
+from app.dal.evaluation_dal import EvaluationDAL # 导入 EvaluationDAL
+from app.services.evaluation_service import EvaluationService # 导入 EvaluationService
 # from app.utils.auth import verify_password, get_password_hash, create_access_token # 如果需要在这里处理token，需要导入
 
 import logging # Import logging
@@ -50,6 +54,29 @@ async def get_user_service() -> UserService: # No longer needs conn here
     service = UserService(user_dal=user_dal_instance)
     logger.debug("UserService instance created.") # Add logging
     return service # Return the UserService instance
+
+# Dependency to get OrderService instance
+async def get_order_service() -> OrderService:
+    """Dependency injector for OrderService, injecting OrderDAL with execute_query."""
+    logger.debug("Attempting to get OrderService instance.")
+    # Instantiate OrderDAL, injecting the execute_query function
+    order_dal_instance = OrdersDAL(execute_query_func=execute_query)
+    logger.debug("OrderDAL instance created.")
+    # Instantiate OrderService, injecting the OrderDAL instance
+    service = OrderService(order_dal=order_dal_instance)
+    logger.debug("OrderService instance created.")
+    return service # Return the OrderService instance
+
+async def get_evaluation_service() -> EvaluationService:
+    """Dependency injector for EvaluationService, injecting EvaluationDAL with execute_query."""
+    logger.debug("Attempting to get EvaluationService instance.")
+    # Instantiate EvaluationDAL, injecting the execute_query function
+    evaluation_dal_instance = EvaluationDAL(execute_query_func=execute_query)
+    logger.debug("EvaluationDAL instance created.")
+    # Instantiate EvaluationService, injecting the EvaluationDAL instance
+    service = EvaluationService(evaluation_dal=evaluation_dal_instance)
+    logger.debug("EvaluationService instance created.")
+    return service # Return the EvaluationService instance
 
 # 从配置文件获取 JWT 密钥和算法
 SECRET_KEY = settings.SECRET_KEY # Assumes settings is imported
@@ -125,4 +152,4 @@ async def get_current_active_admin_user(current_user: dict = Depends(get_current
 # TODO: Implement admin authentication dependency get_current_active_admin_user
 # async def get_current_active_admin_user():
 #     # This will involve checking if the user is authenticated and is staff
-#     pass 
+#     pass

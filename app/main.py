@@ -20,7 +20,8 @@ except ImportError:
     uvicorn = None # Handle case where uvicorn might not be installed in this env
 
 # 导入所有模块路由
-from app.routers import users, auth # 暂时只导入已存在的路由
+from app.routers import users, auth, order # 暂时只导入已存在的路由
+from app.routers import evaluation # 新增：导入评价路由
 # from app.routers import products, orders # 这些文件后面会创建
 
 # Define a comprehensive logging configuration dictionary
@@ -151,7 +152,10 @@ app.include_router(users.router, prefix="/api/v1")
 # app.include_router(products.router, prefix="/api/v1/products", tags=["Products"]) # 暂时注释掉未创建的路由
 # app.include_router(orders.router, prefix="/api/v1/orders", tags=["Orders"]) # 暂时注释掉未创建的路由
 app.include_router(auth.router, prefix="/api/v1")
-# ... 注册其他模块路由
+# app.include_router(user.router, prefix="/api/v1") # 移除对 user 模块的注册，因为已更正为 users
+# app.include_router(product.router, prefix="/api/v1") # 移除对 product 模块的注册
+app.include_router(order.router, prefix="/api/v1") # 添加订单路由
+app.include_router(evaluation.router, prefix="/api/v1") # 新增：注册评价路由
 
 @app.get("/")
 async def root():
@@ -166,4 +170,4 @@ async def startup_event():
 @app.on_event("shutdown")
 async def shutdown_event():
     logger.info("Application shutdown...") # Changed from print to logger
-    # 可以在这里关闭数据库连接池等 
+    # 可以在这里关闭数据库连接池等
