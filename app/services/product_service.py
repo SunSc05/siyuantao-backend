@@ -7,16 +7,18 @@ class ProductService:
     """
     商品服务层，处理商品相关的业务逻辑，协调DAL层完成复杂操作
     """
-    def __init__(self, execute_query_func):
+    def __init__(self, product_dal: ProductDAL, product_image_dal: ProductImageDAL, user_favorite_dal: UserFavoriteDAL):
         """
         初始化ProductService实例
         
         Args:
-            execute_query_func: 通用的数据库执行函数
+            product_dal: ProductDAL 实例
+            product_image_dal: ProductImageDAL 实例
+            user_favorite_dal: UserFavoriteDAL 实例
         """
-        self.product_dal = ProductDAL(execute_query_func)
-        self.product_image_dal = ProductImageDAL(execute_query_func)
-        self.user_favorite_dal = UserFavoriteDAL(execute_query_func)
+        self.product_dal = product_dal
+        self.product_image_dal = product_image_dal
+        self.user_favorite_dal = user_favorite_dal
 
     async def create_product(self, conn: pyodbc.Connection, owner_id: int, category_name: str, product_name: str, 
                             description: str, quantity: int, price: float, image_urls: List[str]) -> None:

@@ -1,6 +1,12 @@
 # import databases # Remove this import
 from typing import List, Dict, Optional
 import pyodbc # Import pyodbc for type hinting conn
+from uuid import UUID
+import logging
+
+from app.exceptions import DALError, NotFoundError, IntegrityError, PermissionError, DatabaseError # Import DatabaseError
+
+logger = logging.getLogger(__name__)
 
 class ProductDAL:
     """
@@ -129,7 +135,7 @@ class ProductDAL:
         }
         await self._execute_query(conn, query, values)
 
-    async def reject_product(self, conn: pyodbc.Connection, product_id: int, admin_id: int) -> None:
+    async def reject_product(self, conn: pyodbc.Connection, product_id: int, admin_id: int, reason: Optional[str] = None) -> None:
         """
         管理员拒绝商品，将商品状态设为Rejected
         
@@ -137,17 +143,32 @@ class ProductDAL:
             conn: 数据库连接对象
             product_id: 商品ID
             admin_id: 管理员ID
+            reason: 拒绝原因，可选
         
         Raises:
             DatabaseError: 数据库操作失败时抛出
             PermissionError: 非管理员尝试操作时抛出
         """
-        query = "EXEC sp_RejectProduct @productId = :product_id, @adminId = :admin_id"
+        # Add logging
+        logger.debug(f"DAL: Admin {admin_id} rejecting product {product_id} with reason: {reason}")
+        # Modify query to include reason
+        query = "EXEC sp_RejectProduct @productId = :product_id, @adminId = :admin_id, @reason = :reason"
         values = {
             "product_id": product_id,
-            "admin_id": admin_id
+            "admin_id": admin_id,
+            "reason": reason
         }
-        await self._execute_query(conn, query, values)
+        try:
+            await self._execute_query(conn, query, values)
+            # Add logging for success
+            logger.info(f"DAL: Product {product_id} rejected successfully by admin {admin_id}")
+        except pyodbc.Error as e:
+            logger.error(f"DAL: Database error rejecting product {product_id}: {e}")
+            raise DatabaseError(f"Database error rejecting product {product_id}: {e}") from e
+        except Exception as e:
+            # Catch other potential exceptions during execution
+            logger.error(f"DAL: Unexpected error rejecting product {product_id}: {e}")
+            raise DALError(f"Unexpected error rejecting product {product_id}: {e}") from e
 
     async def withdraw_product(self, conn: pyodbc.Connection, product_id: int, owner_id: int) -> None:
         """

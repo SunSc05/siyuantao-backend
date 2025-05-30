@@ -3,11 +3,10 @@ import pytest_mock
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 from app.services.product_service import ProductService
-from app.dal.product_dal import ProductDAL
-from app.dal.product_image_dal import ProductImageDAL
-from app.dal.user_favorite_dal import UserFavoriteDAL
-from app.exceptions import NotFoundError, DALError
+from app.dal.product_dal import ProductDAL, ProductImageDAL, UserFavoriteDAL
+from app.exceptions import NotFoundError, DALError, PermissionError, IntegrityError
 from datetime import datetime
+from app.schemas.product import ProductCreate, ProductUpdate, Product
 
 # 模拟DAL依赖
 @pytest.fixture
@@ -38,72 +37,86 @@ def product_service(mock_product_dal, mock_image_dal, mock_favorite_dal):
 async def test_create_product_success(product_service: ProductService, mock_product_dal: AsyncMock):
     # 模拟数据
     owner_id = uuid4()
+    image_urls = ["url1", "url2"]
     product_data = ProductCreate(
-        category_name="测试分类",
-        product_name="测试商品",
+        owner_id=str(owner_id),
+        category_name="Electronics",
+        product_name="Laptop",
+        description="A test laptop",
         quantity=10,
-        price=99.9,
-        image_urls=["https://example.com/image.jpg"]
+        price=1200.50,
+        image_urls=image_urls
     )
     
     # 模拟DAL返回
-    mock_product_dal.create_product.return_value = {"product_id": uuid4()}
+    mock_product_dal.create_product.return_value = 123
     
     # 调用服务
-    result = await product_service.create_product(
-        owner_id=owner_id,
-        **product_data.dict()
+    await product_service.create_product(
+        MagicMock(),
+        owner_id,
+        product_data.category_name,
+        product_data.product_name,
+        product_data.description,
+        product_data.quantity,
+        product_data.price,
+        product_data.image_urls
     )
     
-    # 断言
-    assert result == {"product_id": mock_product_dal.create_product.return_value["product_id"]}
     mock_product_dal.create_product.assert_called_once_with(
-        owner_id=owner_id,
-        category_name=product_data.category_name,
-        product_name=product_data.product_name,
-        description=product_data.description,
-        quantity=product_data.quantity,
-        price=product_data.price,
-        image_urls=product_data.image_urls
+        MagicMock(),
+        owner_id,
+        product_data.category_name,
+        product_data.product_name,
+        product_data.description,
+        product_data.quantity,
+        product_data.price
     )
+
+    # Check calls to add_product_image
+    mock_image_dal.add_product_image.assert_any_call(MagicMock(), 123, image_urls[0], 0)
+    mock_image_dal.add_product_image.assert_any_call(MagicMock(), 123, image_urls[1], 1)
+    assert mock_image_dal.add_product_image.call_count == len(image_urls)
 
 @pytest.mark.asyncio
 async def test_get_product_detail_not_found(product_service: ProductService, mock_product_dal: AsyncMock):
     # 模拟DAL返回None
-    mock_product_dal.get_product_detail.return_value = None
+    mock_product_dal.get_product_by_id.return_value = None
     
-    # 调用服务并断言异常
-    with pytest.raises(NotFoundError):
-        await product_service.get_product_detail(product_id=uuid4())
+    product_id = uuid4()
+
+    with pytest.raises(NotFoundError, match=f"Product with ID {product_id} not found."):
+        await product_service.get_product_detail(MagicMock(), product_id)
+
+    mock_product_dal.get_product_by_id.assert_called_once_with(MagicMock(), product_id)
 
 # --- 批量审核测试 ---
 @pytest.mark.asyncio
 async def test_batch_review_products(product_service: ProductService, mock_product_dal: AsyncMock):
     # 模拟参数
-    product_ids = [uuid4(), uuid4()]
     admin_id = uuid4()
-    new_status = "Rejected"
-    reason = "测试拒绝原因"
+    product_ids = [uuid4() for _ in range(3)]
+    action = "Activate"
     
-    # 模拟DAL返回成功数量
-    mock_product_dal.batch_review_products.return_value = 2
+    # Simulate DAL method returning the count of affected products
+    mock_product_dal.batch_activate_products.return_value = len(product_ids)
     
-    # 调用服务
-    result = await product_service.batch_review_products(
-        product_ids=product_ids,
-        admin_id=admin_id,
-        new_status=new_status,
-        reason=reason
+    # Act
+    affected_count = await product_service.batch_activate_products(
+        MagicMock(),
+        admin_id,
+        product_ids
     )
     
-    # 断言
-    assert result == 2
-    mock_product_dal.batch_review_products.assert_called_once_with(
-        product_ids=product_ids,
-        admin_id=admin_id,
-        new_status=new_status,
-        reason=reason
+    # Assert that the correct DAL method was called with correct parameters
+    mock_product_dal.batch_activate_products.assert_called_once_with(
+        MagicMock(),
+        product_ids,
+        admin_id
     )
+    
+    # Assert the result
+    assert affected_count == len(product_ids)
 
 @pytest.mark.asyncio
 async def test_update_product_success(product_service: ProductService, mock_product_dal: AsyncMock, mock_image_dal: AsyncMock):
@@ -130,19 +143,16 @@ async def test_update_product_success(product_service: ProductService, mock_prod
         conn=MagicMock(), # Pass a mock connection
         product_id=product_id,
         owner_id=owner_id,
-        category_name=update_data.category_name,
-        product_name=update_data.product_name,
-        description=update_data.description,
-        quantity=update_data.quantity,
-        price=update_data.price,
-        image_urls=update_data.image_urls
+        product_update_data=update_data # Pass the schema object
     )
 
     # 断言 DAL 方法是否被正确调用
     mock_product_dal.get_product_by_id.assert_called_once_with(MagicMock(), product_id)
     mock_product_dal.update_product.assert_called_once_with(
-        MagicMock(), product_id, owner_id, update_data.category_name, 
-        update_data.product_name, update_data.description, update_data.quantity, update_data.price
+        MagicMock(),
+        product_id,
+        owner_id,
+        update_data # Pass the schema object
     )
     mock_image_dal.delete_product_images_by_product_id.assert_called_once_with(MagicMock(), product_id)
     mock_image_dal.add_product_image.assert_called_once_with(MagicMock(), product_id, update_data.image_urls[0])
@@ -171,12 +181,7 @@ async def test_update_product_permission_denied(product_service: ProductService,
             conn=MagicMock(),
             product_id=product_id,
             owner_id=other_user_id, # Use different owner ID
-            category_name=update_data.category_name,
-            product_name=update_data.product_name,
-            description=update_data.description,
-            quantity=update_data.quantity,
-            price=update_data.price,
-            image_urls=update_data.image_urls
+            product_update_data=update_data # Pass the schema object
         )
 
     # 断言异常信息
@@ -210,12 +215,7 @@ async def test_update_product_not_found(product_service: ProductService, mock_pr
             conn=MagicMock(),
             product_id=product_id,
             owner_id=owner_id,
-            category_name=update_data.category_name,
-            product_name=update_data.product_name,
-            description=update_data.description,
-            quantity=update_data.quantity,
-            price=update_data.price,
-            image_urls=update_data.image_urls
+            product_update_data=update_data # Pass the schema object
         )
 
     # 断言异常信息
@@ -389,21 +389,15 @@ async def test_add_favorite_already_favorited(product_service: ProductService, m
     user_id = uuid4()
     product_id = uuid4()
 
-    # 模拟 DAL 抛出 IntegrityError (表示已存在)
-    mock_favorite_dal.add_user_favorite.side_effect = IntegrityError("该商品已被您收藏") # Use the actual expected message
+    # Simulate DAL raising IntegrityError for duplicate favorite
+    mock_favorite_dal.add_user_favorite.side_effect = IntegrityError("Favorite already exists.")
 
-    # 调用服务并断言 ValueError (Service 层将 IntegrityError 转换为 ValueError)
-    with pytest.raises(ValueError) as excinfo:
-        await product_service.add_favorite(
-            conn=MagicMock(),
-            user_id=user_id,
-            product_id=product_id
-        )
+    # Act and Assert
+    with pytest.raises(IntegrityError, match="Favorite already exists."):
+        # Pass a mock connection
+        await product_service.add_favorite(MagicMock(), user_id, product_id)
 
-    # 断言异常信息
-    assert "You have already favorited this product." in str(excinfo.value)
-
-    # 断言 DAL 方法被调用
+    # Assert that DAL method was called correctly
     mock_favorite_dal.add_user_favorite.assert_called_once_with(MagicMock(), user_id, product_id)
 
 @pytest.mark.asyncio

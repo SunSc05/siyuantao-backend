@@ -31,9 +31,9 @@ app.dependency_overrides[get_db_connection] = lambda: MagicMock()
 async def test_create_new_evaluation_success(client, mock_evaluation_service, mock_current_user, mock_db_connection):
     """Test successful creation of a new evaluation."""
     # Override specific dependencies for this test to use the mocks passed as fixtures
-    app.dependency_overrides[get_evaluation_service] = lambda: mock_evaluation_service
-    app.dependency_overrides[get_current_user] = lambda: mock_current_user
-    app.dependency_overrides[get_db_connection] = lambda: mock_db_connection
+    # app.dependency_overrides[get_evaluation_service] = lambda: mock_evaluation_service # Removed redundant override
+    # app.dependency_overrides[get_current_user] = lambda: mock_current_user # Removed redundant override
+    # app.dependency_overrides[get_db_connection] = lambda: mock_db_connection # Removed redundant override
 
     evaluation_data = {
         "order_id": 1,
@@ -68,29 +68,31 @@ async def test_create_new_evaluation_success(client, mock_evaluation_service, mo
 async def test_create_new_evaluation_unauthorized(client, mock_evaluation_service, mock_db_connection):
     """Test creating evaluation without a valid user (unauthorized)."""
     # Temporarily remove get_current_user override to simulate unauthorized access
-    app.dependency_overrides[get_current_user] = lambda: {"user_id": None}
+    with client.app.dependency_overrides: # Use client.app.dependency_overrides context manager
+        client.app.dependency_overrides[get_current_user] = lambda: None # Simulate no current user
 
-    evaluation_data = {
-        "order_id": 1,
-        "rating": 5,
-        "comment": "Excellent product!"
-    }
+        evaluation_data = {
+            "order_id": 1,
+            "rating": 5,
+            "comment": "Excellent product!"
+        }
 
-    response = await client.post("/evaluations/", json=evaluation_data)
+        response = await client.post("/evaluations/", json=evaluation_data)
 
-    assert response.status_code == status.HTTP_401_UNAUTHORIZED
-    assert response.json() == {"detail": "无法获取当前用户信息"}
-    mock_evaluation_service.create_evaluation.assert_not_called()
+        assert response.status_code == status.HTTP_401_UNAUTHORIZED
+        assert response.json() == {"detail": "无法获取当前用户信息"}
+        mock_evaluation_service.create_evaluation.assert_not_called()
 
     # Restore original override for other tests
-    app.dependency_overrides[get_current_user] = lambda: {"user_id": str(uuid4()), "username": "testuser"}
+    # app.dependency_overrides[get_current_user] = lambda: {"user_id": str(uuid4()), "username": "testuser"} # Removed redundant restoration
 
 @pytest.mark.asyncio
 async def test_create_new_evaluation_integrity_error(client, mock_evaluation_service, mock_current_user, mock_db_connection):
     """Test handling of IntegrityError during evaluation creation."""
-    app.dependency_overrides[get_evaluation_service] = lambda: mock_evaluation_service
-    app.dependency_overrides[get_current_user] = lambda: mock_current_user
-    app.dependency_overrides[get_db_connection] = lambda: mock_db_connection
+    # Use the client fixture's dependency overrides, no need to re-override here
+    # app.dependency_overrides[get_evaluation_service] = lambda: mock_evaluation_service # Removed redundant override
+    # app.dependency_overrides[get_current_user] = lambda: mock_current_user # Removed redundant override
+    # app.dependency_overrides[get_db_connection] = lambda: mock_db_connection # Removed redundant override
 
     evaluation_data = {
         "order_id": 1,
@@ -107,9 +109,10 @@ async def test_create_new_evaluation_integrity_error(client, mock_evaluation_ser
 @pytest.mark.asyncio
 async def test_create_new_evaluation_value_error(client, mock_evaluation_service, mock_current_user, mock_db_connection):
     """Test handling of ValueError during evaluation creation."""
-    app.dependency_overrides[get_evaluation_service] = lambda: mock_evaluation_service
-    app.dependency_overrides[get_current_user] = lambda: mock_current_user
-    app.dependency_overrides[get_db_connection] = lambda: mock_db_connection
+    # Use the client fixture's dependency overrides, no need to re-override here
+    # app.dependency_overrides[get_evaluation_service] = lambda: mock_evaluation_service # Removed redundant override
+    # app.dependency_overrides[get_current_user] = lambda: mock_current_user # Removed redundant override
+    # app.dependency_overrides[get_db_connection] = lambda: mock_db_connection # Removed redundant override
 
     evaluation_data = {
         "order_id": 1,
@@ -126,9 +129,10 @@ async def test_create_new_evaluation_value_error(client, mock_evaluation_service
 @pytest.mark.asyncio
 async def test_create_new_evaluation_forbidden_error(client, mock_evaluation_service, mock_current_user, mock_db_connection):
     """Test handling of ForbiddenError during evaluation creation."""
-    app.dependency_overrides[get_evaluation_service] = lambda: mock_evaluation_service
-    app.dependency_overrides[get_current_user] = lambda: mock_current_user
-    app.dependency_overrides[get_db_connection] = lambda: mock_db_connection
+    # Use the client fixture's dependency overrides, no need to re-override here
+    # app.dependency_overrides[get_evaluation_service] = lambda: mock_evaluation_service # Removed redundant override
+    # app.dependency_overrides[get_current_user] = lambda: mock_current_user # Removed redundant override
+    # app.dependency_overrides[get_db_connection] = lambda: mock_db_connection # Removed redundant override
 
     evaluation_data = {
         "order_id": 1,
@@ -145,9 +149,10 @@ async def test_create_new_evaluation_forbidden_error(client, mock_evaluation_ser
 @pytest.mark.asyncio
 async def test_create_new_evaluation_not_found_error(client, mock_evaluation_service, mock_current_user, mock_db_connection):
     """Test handling of NotFoundError during evaluation creation."""
-    app.dependency_overrides[get_evaluation_service] = lambda: mock_evaluation_service
-    app.dependency_overrides[get_current_user] = lambda: mock_current_user
-    app.dependency_overrides[get_db_connection] = lambda: mock_db_connection
+    # Use the client fixture's dependency overrides, no need to re-override here
+    # app.dependency_overrides[get_evaluation_service] = lambda: mock_evaluation_service # Removed redundant override
+    # app.dependency_overrides[get_current_user] = lambda: mock_current_user # Removed redundant override
+    # app.dependency_overrides[get_db_connection] = lambda: mock_db_connection # Removed redundant override
 
     evaluation_data = {
         "order_id": 999, # Non-existent order
@@ -164,9 +169,10 @@ async def test_create_new_evaluation_not_found_error(client, mock_evaluation_ser
 @pytest.mark.asyncio
 async def test_create_new_evaluation_dal_error(client, mock_evaluation_service, mock_current_user, mock_db_connection):
     """Test handling of DALError during evaluation creation."""
-    app.dependency_overrides[get_evaluation_service] = lambda: mock_evaluation_service
-    app.dependency_overrides[get_current_user] = lambda: mock_current_user
-    app.dependency_overrides[get_db_connection] = lambda: mock_db_connection
+    # Use the client fixture's dependency overrides, no need to re-override here
+    # app.dependency_overrides[get_evaluation_service] = lambda: mock_evaluation_service # Removed redundant override
+    # app.dependency_overrides[get_current_user] = lambda: mock_current_user # Removed redundant override
+    # app.dependency_overrides[get_db_connection] = lambda: mock_db_connection # Removed redundant override
 
     evaluation_data = {
         "order_id": 1,
@@ -183,9 +189,10 @@ async def test_create_new_evaluation_dal_error(client, mock_evaluation_service, 
 @pytest.mark.asyncio
 async def test_create_new_evaluation_generic_exception(client, mock_evaluation_service, mock_current_user, mock_db_connection):
     """Test handling of a generic Exception during evaluation creation."""
-    app.dependency_overrides[get_evaluation_service] = lambda: mock_evaluation_service
-    app.dependency_overrides[get_current_user] = lambda: mock_current_user
-    app.dependency_overrides[get_db_connection] = lambda: mock_db_connection
+    # Use the client fixture's dependency overrides, no need to re-override here
+    # app.dependency_overrides[get_evaluation_service] = lambda: mock_evaluation_service # Removed redundant override
+    # app.dependency_overrides[get_current_user] = lambda: mock_current_user # Removed redundant override
+    # app.dependency_overrides[get_db_connection] = lambda: mock_db_connection # Removed redundant override
 
     evaluation_data = {
         "order_id": 1,
@@ -203,4 +210,9 @@ async def test_create_new_evaluation_generic_exception(client, mock_evaluation_s
 @pytest.fixture(autouse=True)
 def restore_dependencies():
     yield
-    app.dependency_overrides.clear()
+    # app.dependency_overrides.clear() # Removed redundant clear, conftest handles restoration
+
+# Removed redundant overrides outside tests
+# app.dependency_overrides[get_evaluation_service] = lambda: MagicMock(spec=EvaluationService)
+# app.dependency_overrides[get_current_user] = lambda: {"user_id": str(uuid4()), "username": "testuser"}
+# app.dependency_overrides[get_db_connection] = lambda: MagicMock()

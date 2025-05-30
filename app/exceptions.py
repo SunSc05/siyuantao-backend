@@ -21,6 +21,11 @@ class IntegrityError(DALError):
 
 # ... 您可以根据业务需求添加更多特定异常，例如 AuthorizationError, ValidationError (for business logic)
 
+class DatabaseError(DALError):
+    """Raised for general database errors (e.g., connection issues, query execution failures)."""
+    def __init__(self, message="Database error"):
+        super().__init__(message)
+
 class EmailSendingError(Exception):
     """Raised when there is an error sending email."""
     def __init__(self, message="Email sending failed", detail=None):
@@ -37,6 +42,12 @@ class AuthenticationError(Exception):
 class ForbiddenError(Exception):
     """Raised when a user is forbidden from accessing a resource or performing an action."""
     def __init__(self, message="Operation forbidden"):
+        self.message = message
+        super().__init__(self.message)
+
+class PermissionError(Exception):
+    """Raised when a user does not have permission to perform an action on a resource."""
+    def __init__(self, message="Permission denied"):
         self.message = message
         super().__init__(self.message)
 

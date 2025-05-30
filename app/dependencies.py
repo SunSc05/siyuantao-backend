@@ -47,7 +47,7 @@ logger = logging.getLogger(__name__) # Get logger instance
 
 # Dependency to get a UserService instance
 # Inject execute_query into UserDAL when creating UserService
-async def get_user_service() -> UserService: # No longer needs conn here
+async def get_user_service() -> UserService:
     """Dependency injector for UserService, injecting UserDAL with execute_query."""
     logger.debug("Attempting to get UserService instance.") # Add logging
     # Instantiate UserDAL, injecting the execute_query function
@@ -57,6 +57,42 @@ async def get_user_service() -> UserService: # No longer needs conn here
     service = UserService(user_dal=user_dal_instance)
     logger.debug("UserService instance created.") # Add logging
     return service # Return the UserService instance
+
+# Dependency to get a ProductService instance
+async def get_product_service() -> ProductService:
+    """Dependency injector for ProductService, injecting DALs with execute_query."""
+    logger.debug("Attempting to get ProductService instance.")
+    product_dal_instance = ProductDAL(execute_query_func=execute_query)
+    product_image_dal_instance = ProductImageDAL(execute_query_func=execute_query)
+    user_favorite_dal_instance = UserFavoriteDAL(execute_query_func=execute_query)
+    logger.debug("Product DAL instances created.")
+    service = ProductService(
+        product_dal=product_dal_instance,
+        product_image_dal=product_image_dal_instance,
+        user_favorite_dal=user_favorite_dal_instance
+    )
+    logger.debug("ProductService instance created.")
+    return service
+
+# Dependency to get an OrderService instance
+async def get_order_service() -> OrderService:
+    """Dependency injector for OrderService, injecting OrdersDAL with execute_query."""
+    logger.debug("Attempting to get OrderService instance.")
+    order_dal_instance = OrdersDAL(execute_query_func=execute_query)
+    logger.debug("OrdersDAL instance created.")
+    service = OrderService(order_dal=order_dal_instance)
+    logger.debug("OrderService instance created.")
+    return service
+
+# Dependency to get an EvaluationService instance
+async def get_evaluation_service() -> EvaluationService:
+    """Dependency injector for EvaluationService, injecting EvaluationDAL with execute_query."""
+    logger.debug("Attempting to get EvaluationService instance.")
+    evaluation_dal_instance = EvaluationDAL(execute_query_func=execute_query)
+    logger.debug("EvaluationDAL instance created.")
+    service = EvaluationService(evaluation_dal=evaluation_dal_instance)
+    logger.debug("EvaluationService instance created.")
+    return service
 
 # 从配置文件获取 JWT 密钥和算法
 SECRET_KEY = settings.SECRET_KEY # Assumes settings is imported

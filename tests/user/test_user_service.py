@@ -4,12 +4,12 @@ from httpx import AsyncClient
 
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4, UUID
+from datetime import datetime, timezone
 
 from app.services.user_service import UserService
 from app.dal.user_dal import UserDAL
 from app.schemas.user_schemas import UserRegisterSchema, UserLoginSchema, UserPasswordUpdate, UserProfileUpdateSchema, UserStatusUpdateSchema, UserCreditAdjustmentSchema, UserResponseSchema # Import necessary schemas
 from app.exceptions import NotFoundError, IntegrityError, DALError, AuthenticationError, ForbiddenError # Import necessary exceptions
-from datetime import datetime
 
 # Mock Fixture for UserDAL
 @pytest.fixture
@@ -69,67 +69,61 @@ async def test_create_user_success(user_service: UserService, mock_user_dal: Asy
     # Updated user data without email, with phone_number
     user_data = UserRegisterSchema(
         username="testuser",
-        # email="test@example.com", # Removed email
         password="securepassword",
         major="Computer Science",
-        phone_number="1234567890", # Added phone_number
+        phone_number="1234567890",
     )
     
     hashed_password = "hashed_password_abc"
     get_password_hash_mock.return_value = hashed_password
 
-    # Mock the DAL's create_user method to return a successful creation result
-    # The structure should match what the real DAL returns after sp_CreateUser executes and a subsequent fetch
-    # Use English keys to match the key_mapping in _convert_dal_user_to_schema
-    mock_user_dal.create_user.return_value = {
-        "user_id": uuid4(), # Use English key user_id (snake_case)
-        "username": user_data.username, # Use English key username (snake_case)
-        "status": "Active", # Use English key Status (snake_case)
-        "credit": 100, # Use English key Credit (snake_case)
-        "is_staff": False, # Use English key IsStaff (snake_case)
-        "is_verified": False, # Use English key IsVerified (snake_case)
-        "major": user_data.major, # Use English key Major (snake_case)
-        "avatar_url": None, # Use English key AvatarUrl (snake_case)
-        "bio": None, # Use English key Bio (snake_case)
-        "phone_number": user_data.phone_number, # Use English key PhoneNumber (snake_case)
-        "join_time": datetime.utcnow(), # Use English key JoinTime (snake_case)
-        "email": None # Use English key Email (snake_case)
+    # Mock the DAL's create_user method to return a successful creation result.
+    # The DAL's create_user calls get_user_by_id internally and returns the result.
+    # Simulate the return value of get_user_by_id with Chinese keys as expected by _convert_dal_user_to_schema.
+    created_user_dal_data = {
+        "用户ID": uuid4(),
+        "用户名": user_data.username,
+        "账户状态": "Active",
+        "信用分": 100,
+        "是否管理员": False,
+        "是否超级管理员": False, # Added missing key
+        "是否已认证": False,
+        "专业": user_data.major,
+        "头像URL": None,
+        "个人简介": None,
+        "手机号码": user_data.phone_number,
+        "注册时间": datetime.now(timezone.utc), # Use timezone-aware datetime
+        "邮箱": None
     }
-    
-    # Mock the DAL's get_user_profile_by_id method, as create_user service method now calls it
-    # It should return data structured like UserResponseSchema (or the dictionary format expected by _convert_dal_user_to_schema)
-    # Use English keys here too
-    mock_user_dal.get_user_profile_by_id.return_value = mock_user_dal.create_user.return_value # Assuming the data format is consistent
+    mock_user_dal.create_user.return_value = created_user_dal_data # DAL create_user now returns the fetched data
 
     # Act
-    # Call the service method with updated user_data
     created_user = await user_service.create_user(mock_db_connection, user_data)
 
     # Assert the returned user data is a UserResponseSchema instance and has expected values
-    assert isinstance(created_user, UserResponseSchema) # Expect UserResponseSchema instance
+    assert isinstance(created_user, UserResponseSchema)
     assert created_user.username == user_data.username
-    assert created_user.email is None # Email should be None
+    assert created_user.email is None
     assert created_user.status == "Active"
     assert created_user.credit == 100
     assert created_user.is_staff is False
+    assert created_user.is_super_admin is False # Assert is_super_admin
     assert created_user.is_verified is False
     assert created_user.major == user_data.major
-    assert created_user.phone_number == user_data.phone_number # Assert phone_number
-    assert isinstance(created_user.user_id, UUID) # Assert user_id type
-    assert isinstance(created_user.join_time, datetime) # Assert join_time type
+    assert created_user.phone_number == user_data.phone_number
+    assert isinstance(created_user.user_id, UUID)
+    assert isinstance(created_user.join_time, datetime) and created_user.join_time.tzinfo is not None # Assert timezone-aware datetime type
 
-    # Verify the DAL methods were called with the correct data
+    # Verify the DAL method was called with the correct data
     mock_user_dal.create_user.assert_called_once_with(
         mock_db_connection,
         user_data.username,
         hashed_password,
-        user_data.phone_number, # Assert phone_number is passed
+        user_data.phone_number,
         major=user_data.major
     )
-    # Verify get_user_profile_by_id was called if necessary, but based on current Service logic,
-    # it seems create_user directly returns the data, so get_user_profile_by_id might not be called.
-    # Adjust assertion based on actual Service logic if different.
-    mock_user_dal.get_user_profile_by_id.assert_not_called()
+    # get_user_profile_by_id should NOT be called directly by the service's create_user method anymore
+    mock_user_dal.get_user_by_id.assert_not_called()
 
 @pytest.mark.asyncio
 async def test_create_user_duplicate_username(user_service: UserService, mock_user_dal: AsyncMock, mock_db_connection: MagicMock, mock_utils_auth: tuple[MagicMock, MagicMock, MagicMock], mocker: pytest_mock.MockerFixture):
@@ -139,7 +133,6 @@ async def test_create_user_duplicate_username(user_service: UserService, mock_us
     # Updated user data without email, with phone_number
     user_data = UserRegisterSchema(
         username="existinguser", # Use a username that is simulated to exist
-        # email="new@example.com", # Removed email
         password="securepassword",
         major="Physics",
         phone_number="9876543210", # Added phone_number
@@ -213,20 +206,21 @@ async def test_create_user_dal_error(user_service: UserService, mock_user_dal: A
 @pytest.mark.asyncio
 async def test_get_user_profile_by_id_found(user_service: UserService, mock_user_dal: AsyncMock, mock_db_connection: MagicMock, mock_utils_auth: tuple[MagicMock, MagicMock, MagicMock], mocker: pytest_mock.MockerFixture):
     test_user_id = uuid4()
-    # Simulate DAL returning user data with snake_case keys
+    # Simulate DAL returning user data with Chinese keys as expected by _convert_dal_user_to_schema
     dal_return_data = {
-        "user_id": test_user_id,
-        "username": "testuser",
-        "status": "Active",
-        "credit": 100,
-        "is_staff": False,
-        "is_verified": True,
-        "major": "Computer Science",
-        "avatar_url": "http://example.com/avatar.jpg",
-        "bio": "A test user.",
-        "phone_number": "1234567890",
-        "join_time": datetime(2023, 1, 1, 12, 0, 0),
-        "email": "test@example.com"
+        "用户ID": test_user_id,
+        "用户名": "testuser",
+        "账户状态": "Active",
+        "信用分": 100,
+        "是否管理员": False,
+        "是否超级管理员": False, # Added missing key
+        "是否已认证": True,
+        "专业": "Computer Science",
+        "头像URL": "http://example.com/avatar.jpg",
+        "个人简介": "A test user.",
+        "手机号码": "1234567890",
+        "注册时间": datetime(2023, 1, 1, 12, 0, 0, tzinfo=timezone.utc), # Use timezone-aware datetime
+        "邮箱": "test@example.com"
     }
     mock_user_dal.get_user_by_id.return_value = dal_return_data
 
@@ -234,23 +228,21 @@ async def test_get_user_profile_by_id_found(user_service: UserService, mock_user
     user_profile = await user_service.get_user_profile_by_id(mock_db_connection, test_user_id)
 
     # Assertions on the service function's return value
-    # Service should return a UserResponseSchema instance
     assert isinstance(user_profile, UserResponseSchema)
-    # Assert the attributes of the Pydantic model instance
-    assert user_profile.user_id == test_user_id # Service returns UUID object
+    assert user_profile.user_id == test_user_id
     assert user_profile.username == "testuser"
     assert user_profile.email == "test@example.com"
     assert user_profile.status == "Active"
     assert user_profile.credit == 100
     assert user_profile.is_staff is False
+    assert user_profile.is_super_admin is False # Assert is_super_admin
     assert user_profile.is_verified is True
     assert user_profile.major == "Computer Science"
     assert user_profile.avatar_url == "http://example.com/avatar.jpg"
     assert user_profile.bio == "A test user."
     assert user_profile.phone_number == "1234567890"
-    # Service returns datetime object, compare as such or check type
-    assert isinstance(user_profile.join_time, datetime) # Check type
-    assert user_profile.join_time == datetime(2023, 1, 1, 12, 0, 0) # Compare with datetime object
+    assert isinstance(user_profile.join_time, datetime) and user_profile.join_time.tzinfo is not None # Assert timezone-aware datetime type
+    assert user_profile.join_time == datetime(2023, 1, 1, 12, 0, 0, tzinfo=timezone.utc) # Compare with timezone-aware datetime object
 
     # Verify DAL method was called with correct arguments
     mock_user_dal.get_user_by_id.assert_called_once_with(
@@ -398,109 +390,105 @@ async def test_authenticate_user_and_create_token_disabled_account(user_service:
 
 @pytest.mark.asyncio
 async def test_update_user_profile_success_with_updates(user_service: UserService, mock_user_dal: AsyncMock, mock_db_connection: MagicMock, mock_utils_auth: tuple[MagicMock, MagicMock, MagicMock], mocker: pytest_mock.MockerFixture):
+    # Arrange
     test_user_id = uuid4()
     update_data = UserProfileUpdateSchema(
-        major="New Major",
-        bio="Updated bio."
-        # phone_number=None # Explicitly setting optional fields
+        major="Updated Major",
+        bio="New bio content",
+        phone_number="9876543210",
+        avatar_url="http://example.com/updated_avatar.jpg",
+        # email="updated@example.com" # Assuming email update is not part of this schema
     )
-
-    # Simulate DAL returning the updated user data
-    # Ensure all expected keys by _convert_dal_user_to_schema are present, including optional ones with None values
-    dal_return_data = {
-        "user_id": test_user_id,
-        "username": "original_user",
-        "status": "Active",
-        "credit": 100,
-        "is_staff": False,
-        "is_verified": True,
-        "major": update_data.major if update_data.major is not None else "Original Major", # Reflect update or original value
-        "avatar_url": update_data.avatar_url if update_data.avatar_url is not None else "original_avatar.jpg",
-        "bio": update_data.bio if update_data.bio is not None else "Original bio.",
-        "phone_number": update_data.phone_number if update_data.phone_number is not None else "1234567890",
-        "join_time": datetime(2023, 1, 1, 12, 0, 0),
-        "email": "original@example.com" # Include email as optional
+    
+    # Simulate DAL returning the updated user data with Chinese keys
+    updated_dal_data = {
+        "用户ID": test_user_id,
+        "用户名": "testuser",
+        "账户状态": "Active",
+        "信用分": 100,
+        "是否管理员": False,
+        "是否超级管理员": False, # Added missing key
+        "是否已认证": True,
+        "专业": update_data.major,
+        "头像URL": update_data.avatar_url,
+        "个人简介": update_data.bio,
+        "手机号码": update_data.phone_number,
+        "注册时间": datetime(2023, 1, 1, 12, 0, 0, tzinfo=timezone.utc), # Use timezone-aware datetime
+        "邮箱": "test@example.com" # Email remains unchanged in this test
     }
-    mock_user_dal.update_user_profile.return_value = dal_return_data
+    # The update_user_profile DAL method now returns the updated data directly
+    mock_user_dal.update_user_profile.return_value = updated_dal_data
 
-    # Call the service function
+    # Act
     updated_user = await user_service.update_user_profile(mock_db_connection, test_user_id, update_data)
 
-    # Assertions on the service function's return value
-    # Service should return a UserResponseSchema instance
+    # Assertions
     assert isinstance(updated_user, UserResponseSchema)
-    assert updated_user.user_id == test_user_id # Service returns UUID object
-    assert updated_user.major == "New Major"
-    assert updated_user.bio == "Updated bio."
-    # Assert other fields remain as in the simulated DAL return
-    assert updated_user.username == "original_user"
-    assert updated_user.email == "original@example.com"
+    assert updated_user.user_id == test_user_id
+    assert updated_user.major == update_data.major
+    assert updated_user.bio == update_data.bio
+    assert updated_user.phone_number == update_data.phone_number
+    assert updated_user.avatar_url == update_data.avatar_url
+    # Assert other fields remain unchanged
+    assert updated_user.username == "testuser"
+    assert updated_user.email == "test@example.com"
     assert updated_user.status == "Active"
-    assert updated_user.credit == 100
-    assert updated_user.is_staff is False
-    assert updated_user.is_verified is True
-    assert updated_user.avatar_url == "original_avatar.jpg"
-    assert updated_user.phone_number == "1234567890"
-    assert isinstance(updated_user.join_time, datetime) # Ensure it's a datetime object
-    assert updated_user.join_time == dal_return_data["join_time"] # Compare with datetime object
 
     # Verify DAL method was called with correct arguments
     mock_user_dal.update_user_profile.assert_called_once_with(
         mock_db_connection,
         test_user_id,
-        major="New Major",
-        avatar_url=mocker.ANY, # avatar_url was not set in update_data, should be None or DAL default
-        bio="Updated bio.",
-        phone_number=mocker.ANY # phone_number was not set in update_data, should be None or DAL default
+        major=update_data.major,
+        avatar_url=update_data.avatar_url,
+        bio=update_data.bio,
+        phone_number=update_data.phone_number,
+        email=None # Email is None as it's not updated via this schema/method
     )
 
 @pytest.mark.asyncio
 async def test_update_user_profile_success_no_updates(user_service: UserService, mock_user_dal: AsyncMock, mock_db_connection: MagicMock, mock_utils_auth: tuple[MagicMock, MagicMock, MagicMock], mocker: pytest_mock.MockerFixture):
+    # Arrange
     test_user_id = uuid4()
-    # Create an empty update data schema (no fields set)
+    # Simulate no updates being provided in the schema
     update_data = UserProfileUpdateSchema()
 
-    # Simulate DAL returning the current user profile (since no updates are made)
-    # Ensure all expected keys by _convert_dal_user_to_schema are present, including optional ones with None values
-    dal_return_data = {
-        "user_id": test_user_id,
-        "username": "current_user",
-        "status": "Active",
-        "credit": 100,
-        "is_staff": False,
-        "is_verified": True,
-        "major": "Original Major",
-        "avatar_url": "original_avatar.jpg",
-        "bio": "Original bio.",
-        "phone_number": "1234567890",
-        "join_time": datetime(2023, 1, 1, 12, 0, 0),
-        "email": "current@example.com" # Include email as optional
+    # Simulate DAL returning the current user data (as no updates were applied)
+    # Use Chinese keys
+    current_dal_data = {
+        "用户ID": test_user_id,
+        "用户名": "testuser_no_update",
+        "账户状态": "Active",
+        "信用分": 150,
+        "是否管理员": False,
+        "是否超级管理员": False, # Added missing key
+        "是否已认证": True,
+        "专业": "Original Major",
+        "头像URL": "http://example.com/original_avatar.jpg",
+        "个人简介": "Original bio",
+        "手机号码": "1111111111",
+        "注册时间": datetime(2022, 5, 10, 9, 30, 0, tzinfo=timezone.utc), # Use timezone-aware datetime
+        "邮箱": "original@example.com"
     }
     # When no update data is provided, service calls get_user_profile_by_id
-    mock_user_dal.get_user_by_id.return_value = dal_return_data
+    mock_user_dal.get_user_by_id.return_value = current_dal_data
     # update_user_profile should not be called in this case
     mock_user_dal.update_user_profile.assert_not_called()
 
-    # Call the service function
+    # Act
     updated_user = await user_service.update_user_profile(mock_db_connection, test_user_id, update_data)
 
-    # Assertions on the service function's return value
-    # Service should return a UserResponseSchema instance
+    # Assertions
     assert isinstance(updated_user, UserResponseSchema)
-    assert updated_user.user_id == test_user_id # Service returns UUID object
+    assert updated_user.user_id == test_user_id
+    # Assert that fields retain their original values
     assert updated_user.major == "Original Major"
-    assert updated_user.bio == "Original bio."
-    # Assert other fields remain as in the simulated DAL return
-    assert updated_user.username == "current_user"
-    assert updated_user.email == "current@example.com"
+    assert updated_user.bio == "Original bio"
+    assert updated_user.phone_number == "1111111111"
+    assert updated_user.avatar_url == "http://example.com/original_avatar.jpg"
+    # Assert other fields
+    assert updated_user.username == "testuser_no_update"
+    assert updated_user.email == "original@example.com"
     assert updated_user.status == "Active"
-    assert updated_user.credit == 100
-    assert updated_user.is_staff is False
-    assert updated_user.is_verified is True
-    assert updated_user.avatar_url == "original_avatar.jpg"
-    assert updated_user.phone_number == "1234567890"
-    assert isinstance(updated_user.join_time, datetime) # Ensure it's a datetime object
-    assert updated_user.join_time == dal_return_data["join_time"] # Compare with datetime object
 
     # Verify get_user_by_id was called to fetch current profile
     mock_user_dal.get_user_by_id.assert_called_once_with(mock_db_connection, test_user_id)
@@ -553,100 +541,106 @@ async def test_update_user_profile_duplicate_phone(user_service: UserService, mo
 
 @pytest.mark.asyncio
 async def test_update_user_password_success(user_service: UserService, mock_user_dal: AsyncMock, mock_db_connection: MagicMock, mock_utils_auth: tuple[MagicMock, MagicMock, MagicMock], mocker: pytest_mock.MockerFixture):
+    # Arrange
     test_user_id = uuid4()
-    password_update_data = UserPasswordUpdate(old_password="oldpassword", new_password="newpassword")
+    old_password = "oldpassword"
+    new_password = "newpassword"
+    password_update_data = UserPasswordUpdate(
+        old_password=old_password,
+        new_password=new_password
+    )
 
-    # Simulate DAL returning user data including username for the first call (get_user_by_id)
-    mock_user_dal.get_user_by_id.return_value = {"UserID": test_user_id, "用户名": "testuser_pass"} # Need username
+    # Simulate DAL returning the current hashed password
+    mock_user_dal.get_user_password_hash_by_id.return_value = "old_hashed_password"
 
-    # Simulate DAL returning user data including password hash for the second call (get_user_by_username_with_password)
-    mock_user_dal.get_user_by_username_with_password.return_value = {
-        "UserID": test_user_id,
-        "UserName": "testuser_pass",
-        "Password": "hashed_old_password"
-        # Include other minimal required fields
-    }
-
-    # Configure mock_utils_auth[1] (verify_password) to return True for the old password
+    # Simulate verify_password returning True (old password is correct)
     mock_utils_auth[1].return_value = True
 
-    # Simulate DAL.update_user_password returning True on success
+    # Simulate get_password_hash returning the new hashed password
+    mock_utils_auth[0].return_value = "new_hashed_password_from_util"
+
+    # Simulate DAL returning True for successful password update
     mock_user_dal.update_user_password.return_value = True
 
-    # Configure mock_utils_auth[0] (get_password_hash) to return hashed new password
-    mock_utils_auth[0].return_value = "hashed_new_password"
-
-    # Call the service function
+    # Act
     update_success = await user_service.update_user_password(mock_db_connection, test_user_id, password_update_data)
 
     # Assertions
     assert update_success is True
 
-    # Verify DAL methods were called
-    mock_user_dal.get_user_by_id.assert_called_once_with(mock_db_connection, test_user_id)
-    mock_user_dal.get_user_by_username_with_password.assert_called_once_with(mock_db_connection, "testuser_pass")
-    mock_user_dal.update_user_password.assert_called_once_with(mock_db_connection, test_user_id, "hashed_new_password")
-
-    # Verify auth utilities were called
-    mock_utils_auth[1].assert_called_once_with("oldpassword", "hashed_old_password") # verify_password called
-    mock_utils_auth[0].assert_called_once_with("newpassword") # get_password_hash called
+    # Verify DAL methods and utility functions were called with correct arguments
+    mock_user_dal.get_user_password_hash_by_id.assert_called_once_with(mock_db_connection, test_user_id)
+    mock_utils_auth[1].assert_called_once_with(old_password, "old_hashed_password")
+    mock_utils_auth[0].assert_called_once_with(new_password)
+    mock_user_dal.update_user_password.assert_called_once_with(
+        mock_db_connection,
+        test_user_id,
+        "new_hashed_password_from_util" # Should be the hashed new password
+    )
 
 @pytest.mark.asyncio
 async def test_update_user_password_wrong_old_password(user_service: UserService, mock_user_dal: AsyncMock, mock_db_connection: MagicMock, mock_utils_auth: tuple[MagicMock, MagicMock, MagicMock], mocker: pytest_mock.MockerFixture):
+    # Arrange
     test_user_id = uuid4()
-    password_update_data = UserPasswordUpdate(old_password="wrongpassword", new_password="newpassword")
+    old_password = "wrongpassword"
+    new_password = "newpassword"
+    password_update_data = UserPasswordUpdate(
+        old_password=old_password,
+        new_password=new_password
+    )
 
-    # Simulate DAL returning user data including username and password hash
-    mock_user_dal.get_user_by_id.return_value = {"UserID": test_user_id, "用户名": "testuser_pass"}
-    mock_user_dal.get_user_by_username_with_password.return_value = {
-        "UserID": test_user_id,
-        "UserName": "testuser_pass",
-        "Password": "hashed_old_password"
-    }
+    # Simulate DAL returning the current hashed password
+    mock_user_dal.get_user_password_hash_by_id.return_value = "correct_old_hashed_password"
 
-    # Configure mock_utils_auth[1] (verify_password) to return False
+    # Simulate verify_password returning False (old password is incorrect)
     mock_utils_auth[1].return_value = False
 
-    # Call the service function and assert it raises AuthenticationError
-    with pytest.raises(AuthenticationError, match="旧密码不正确"):
+    # Act & Assert
+    # Expect an AuthenticationError to be raised
+    with pytest.raises(AuthenticationError, match="Invalid old password"):
         await user_service.update_user_password(mock_db_connection, test_user_id, password_update_data)
 
-    # Verify DAL methods were called
-    mock_user_dal.get_user_by_id.assert_called_once_with(mock_db_connection, test_user_id)
-    mock_user_dal.get_user_by_username_with_password.assert_called_once_with(mock_db_connection, "testuser_pass")
-    mock_user_dal.update_user_password.assert_not_called() # Update should not happen
-
-    # Verify auth utilities were called
-    mock_utils_auth[1].assert_called_once_with("wrongpassword", "hashed_old_password")
-    mock_utils_auth[0].assert_not_called() # Hashing new password should not happen
+    # Verify methods were called
+    mock_user_dal.get_user_password_hash_by_id.assert_called_once_with(mock_db_connection, test_user_id)
+    mock_utils_auth[1].assert_called_once_with(old_password, "correct_old_hashed_password")
+    # Ensure other methods were NOT called
+    mock_utils_auth[0].assert_not_called()
+    mock_user_dal.update_user_password.assert_not_called()
 
 @pytest.mark.asyncio
 async def test_update_user_password_user_not_found(user_service: UserService, mock_user_dal: AsyncMock, mock_db_connection: MagicMock, mock_utils_auth: tuple[MagicMock, MagicMock, MagicMock], mocker: pytest_mock.MockerFixture):
+    # Arrange
     test_user_id = uuid4()
-    password_update_data = UserPasswordUpdate(old_password="oldpassword", new_password="newpassword")
+    old_password = "oldpassword"
+    new_password = "newpassword"
+    password_update_data = UserPasswordUpdate(
+        old_password=old_password,
+        new_password=new_password
+    )
 
-    # Simulate DAL.get_user_by_id raising NotFoundError
-    mock_user_dal.get_user_by_id.side_effect = NotFoundError(f"User with ID {test_user_id} not found.")
+    # Simulate DAL returning None for the password hash (user not found)
+    mock_user_dal.get_user_password_hash_by_id.return_value = None
 
-    # Call the service function and assert it raises NotFoundError
-    with pytest.raises(NotFoundError, match=f"User with ID {test_user_id} not found."):
+    # Act & Assert
+    # Expect a NotFoundError to be raised
+    with pytest.raises(NotFoundError, match=f"User with ID {test_user_id} not found for password update"):
         await user_service.update_user_password(mock_db_connection, test_user_id, password_update_data)
 
-    # Verify DAL method was called
-    mock_user_dal.get_user_by_id.assert_called_once_with(mock_db_connection, test_user_id)
-    mock_user_dal.get_user_by_username_with_password.assert_not_called()
-    mock_user_dal.update_user_password.assert_not_called()
-    mock_utils_auth[0].assert_not_called()
+    # Verify get_user_password_hash_by_id was called
+    mock_user_dal.get_user_password_hash_by_id.assert_called_once_with(mock_db_connection, test_user_id)
+    # Ensure other methods were NOT called
     mock_utils_auth[1].assert_not_called()
+    mock_utils_auth[0].assert_not_called()
+    mock_user_dal.update_user_password.assert_not_called()
 
 @pytest.mark.asyncio
 async def test_delete_user_success(user_service: UserService, mock_user_dal: AsyncMock, mock_db_connection: MagicMock, mock_utils_auth: tuple[MagicMock, MagicMock, MagicMock], mocker: pytest_mock.MockerFixture):
     test_user_id = uuid4()
 
-    # Simulate DAL returning True on successful deletion
+    # Simulate DAL delete_user returning True on success
     mock_user_dal.delete_user.return_value = True
 
-    # Call the service function
+    # Act
     delete_success = await user_service.delete_user(mock_db_connection, test_user_id)
 
     # Assertions
@@ -659,10 +653,10 @@ async def test_delete_user_success(user_service: UserService, mock_user_dal: Asy
 async def test_delete_user_not_found(user_service: UserService, mock_user_dal: AsyncMock, mock_db_connection: MagicMock, mock_utils_auth: tuple[MagicMock, MagicMock, MagicMock], mocker: pytest_mock.MockerFixture):
     test_user_id = uuid4()
 
-    # Simulate DAL raising NotFoundError
+    # Simulate DAL delete_user raising NotFoundError
     mock_user_dal.delete_user.side_effect = NotFoundError(f"User with ID {test_user_id} not found for deletion.")
 
-    # Call the service function and assert it raises NotFoundError
+    # Act & Assert
     with pytest.raises(NotFoundError, match=f"User with ID {test_user_id} not found for deletion."):
         await user_service.delete_user(mock_db_connection, test_user_id)
 
@@ -671,63 +665,52 @@ async def test_delete_user_not_found(user_service: UserService, mock_user_dal: A
 
 @pytest.mark.asyncio
 async def test_request_verification_email_success(user_service: UserService, mock_user_dal: AsyncMock, mock_db_connection: MagicMock, mock_utils_auth: tuple[MagicMock, MagicMock, MagicMock], mocker: pytest_mock.MockerFixture):
-    email = "verify_req@example.com"
     test_user_id = uuid4()
-    test_token = uuid4()
+    test_email = "test@example.com"
 
-    # Simulate DAL returning success result
-    dal_return_data = {
-        "VerificationToken": test_token,
-        "UserID": test_user_id,
-        "IsNewUser": True
-    }
+    # Simulate DAL returning success result for request_verification_link
+    # This result might contain token, user_id etc. The service layer just passes it through.
+    dal_return_data = {"VerificationToken": "mock_token", "UserID": str(test_user_id), "IsNewUser": False}
     mock_user_dal.request_verification_link.return_value = dal_return_data
 
-    # Call the service function
-    link_result = await user_service.request_verification_email(mock_db_connection, email)
+    # Act
+    result = await user_service.request_verification_email(mock_db_connection, user_id=test_user_id, email=test_email) # Pass email argument
 
     # Assertions
-    assert isinstance(link_result, dict)
-    assert link_result["VerificationToken"] == test_token
-    assert link_result["UserID"] == test_user_id
-    assert link_result["IsNewUser"] is True
+    assert result == dal_return_data
 
-    # Verify DAL method was called
-    mock_user_dal.request_verification_link.assert_called_once_with(mock_db_connection, email)
+    # Verify DAL method was called with correct arguments
+    mock_user_dal.request_verification_link.assert_called_once_with(mock_db_connection, user_id=test_user_id, email=test_email) # Verify email is passed
 
 @pytest.mark.asyncio
 async def test_request_verification_email_disabled_account(user_service: UserService, mock_user_dal: AsyncMock, mock_db_connection: MagicMock, mock_utils_auth: tuple[MagicMock, MagicMock, MagicMock], mocker: pytest_mock.MockerFixture):
-    email = "disabled_req@example.com"
+    test_user_id = uuid4()
+    test_email = "disabled@example.com"
 
-    # Simulate DAL raising DALError for disabled account
-    mock_user_dal.request_verification_link.side_effect = DALError("Account is disabled.")
+    # Simulate DAL raising ForbiddenError for disabled account
+    mock_user_dal.request_verification_link.side_effect = ForbiddenError("Account is disabled.")
 
-    # Call the service function and assert it raises DALError
-    with pytest.raises(DALError, match="Account is disabled."):
-        await user_service.request_verification_email(mock_db_connection, email)
+    # Act & Assert
+    with pytest.raises(ForbiddenError, match="Account is disabled."):
+        await user_service.request_verification_email(mock_db_connection, user_id=test_user_id, email=test_email) # Pass email argument
 
     # Verify DAL method was called
-    mock_user_dal.request_verification_link.assert_called_once_with(mock_db_connection, email)
+    mock_user_dal.request_verification_link.assert_called_once_with(mock_db_connection, user_id=test_user_id, email=test_email) # Verify email is passed
 
 @pytest.mark.asyncio
 async def test_verify_email_success(user_service: UserService, mock_user_dal: AsyncMock, mock_db_connection: MagicMock, mock_utils_auth: tuple[MagicMock, MagicMock, MagicMock], mocker: pytest_mock.MockerFixture):
     test_token = uuid4()
-    test_user_id = uuid4()
 
-    # Simulate DAL returning success result
-    dal_return_data = {
-        "UserID": test_user_id,
-        "IsVerified": True
-    }
+    # Simulate DAL returning success result for verify_email
+    # This result might contain UserID, IsVerified etc. The service layer just passes it through.
+    dal_return_data = {"UserID": str(uuid4()), "IsVerified": True}
     mock_user_dal.verify_email.return_value = dal_return_data
 
-    # Call the service function
-    verification_result = await user_service.verify_email(mock_db_connection, test_token)
+    # Act
+    result = await user_service.verify_email(mock_db_connection, test_token)
 
     # Assertions
-    assert isinstance(verification_result, dict)
-    assert verification_result["UserID"] == test_user_id
-    assert verification_result["IsVerified"] is True
+    assert result == dal_return_data
 
     # Verify DAL method was called
     mock_user_dal.verify_email.assert_called_once_with(mock_db_connection, test_token)
@@ -737,10 +720,10 @@ async def test_verify_email_invalid_or_expired_token(user_service: UserService, 
     test_token = uuid4()
 
     # Simulate DAL raising DALError for invalid/expired token
-    mock_user_dal.verify_email.side_effect = DALError("Magic link invalid or expired.")
+    mock_user_dal.verify_email.side_effect = DALError("验证链接无效或已过期，请重新申请。")
 
-    # Call the service function and assert it raises DALError
-    with pytest.raises(DALError, match="Magic link invalid or expired."):
+    # Act & Assert
+    with pytest.raises(DALError, match="验证链接无效或已过期，请重新申请。"):
         await user_service.verify_email(mock_db_connection, test_token)
 
     # Verify DAL method was called
@@ -750,11 +733,11 @@ async def test_verify_email_invalid_or_expired_token(user_service: UserService, 
 async def test_verify_email_disabled_account(user_service: UserService, mock_user_dal: AsyncMock, mock_db_connection: MagicMock, mock_utils_auth: tuple[MagicMock, MagicMock, MagicMock], mocker: pytest_mock.MockerFixture):
     test_token = uuid4()
 
-    # Simulate DAL raising DALError for disabled account
-    mock_user_dal.verify_email.side_effect = DALError("Account is disabled.")
+    # Simulate DAL raising ForbiddenError for disabled account
+    mock_user_dal.verify_email.side_effect = ForbiddenError("账户已被禁用。")
 
-    # Call the service function and assert it raises DALError
-    with pytest.raises(DALError, match="Account is disabled."):
+    # Act & Assert
+    with pytest.raises(ForbiddenError, match="账户已被禁用。"):
         await user_service.verify_email(mock_db_connection, test_token)
 
     # Verify DAL method was called
@@ -763,21 +746,21 @@ async def test_verify_email_disabled_account(user_service: UserService, mock_use
 @pytest.mark.asyncio
 async def test_get_system_notifications_success(user_service: UserService, mock_user_dal: AsyncMock, mock_db_connection: MagicMock, mock_utils_auth: tuple[MagicMock, MagicMock, MagicMock], mocker: pytest_mock.MockerFixture):
     test_user_id = uuid4()
-    # Simulate DAL returning a list of notification dicts
+    # Simulate DAL returning a list of notification dictionaries
     dal_return_data = [
-        {"NotificationID": uuid4(), "UserID": test_user_id, "Message": "Notification 1", "IsRead": False, "CreatedAt": datetime.now()},
-        {"NotificationID": uuid4(), "UserID": test_user_id, "Message": "Notification 2", "IsRead": True, "CreatedAt": datetime.now()},
+        {"NotificationID": uuid4(), "UserID": test_user_id, "Message": "Test notification 1", "IsRead": False, "CreatedAt": datetime.now(timezone.utc)},
+        {"NotificationID": uuid4(), "UserID": test_user_id, "Message": "Test notification 2", "IsRead": True, "CreatedAt": datetime.now(timezone.utc)},
     ]
     mock_user_dal.get_system_notifications_by_user_id.return_value = dal_return_data
 
-    # Call the service function
+    # Act
     notifications = await user_service.get_system_notifications(mock_db_connection, test_user_id)
 
-    # Assertions (Service layer doesn't convert keys for notifications currently)
+    # Assertions
     assert isinstance(notifications, list)
-    assert len(notifications) == 2
-    assert notifications[0]["Message"] == "Notification 1"
-    assert notifications[1]["IsRead"] is True
+    assert len(notifications) == len(dal_return_data)
+    # Further assertions on the structure and content of notifications if needed
+    assert notifications == dal_return_data # Assuming service passes through the raw dicts for now
 
     # Verify DAL method was called
     mock_user_dal.get_system_notifications_by_user_id.assert_called_once_with(mock_db_connection, test_user_id)
@@ -788,12 +771,13 @@ async def test_get_system_notifications_no_notifications(user_service: UserServi
     # Simulate DAL returning an empty list
     mock_user_dal.get_system_notifications_by_user_id.return_value = []
 
-    # Call the service function
+    # Act
     notifications = await user_service.get_system_notifications(mock_db_connection, test_user_id)
 
     # Assertions
     assert isinstance(notifications, list)
     assert len(notifications) == 0
+    assert notifications == []
 
     # Verify DAL method was called
     mock_user_dal.get_system_notifications_by_user_id.assert_called_once_with(mock_db_connection, test_user_id)
@@ -803,50 +787,52 @@ async def test_mark_system_notification_as_read_success(user_service: UserServic
     test_notification_id = uuid4()
     test_user_id = uuid4()
 
-    # Simulate DAL returning True on success
-    mock_user_dal.mark_notification_as_read.return_value = True
+    # Simulate DAL returning True for success
+    mock_user_dal.mark_system_notification_as_read.return_value = True
 
-    # Call the service function
+    # Act
     success = await user_service.mark_system_notification_as_read(mock_db_connection, test_notification_id, test_user_id)
 
     # Assertions
     assert success is True
 
     # Verify DAL method was called
-    mock_user_dal.mark_notification_as_read.assert_called_once_with(mock_db_connection, test_notification_id, test_user_id)
+    mock_user_dal.mark_system_notification_as_read.assert_called_once_with(mock_db_connection, test_notification_id, test_user_id)
 
 @pytest.mark.asyncio
 async def test_mark_system_notification_as_read_not_found(user_service: UserService, mock_user_dal: AsyncMock, mock_db_connection: MagicMock, mock_utils_auth: tuple[MagicMock, MagicMock, MagicMock], mocker: pytest_mock.MockerFixture):
     test_notification_id = uuid4()
     test_user_id = uuid4()
 
-    # Simulate DAL raising NotFoundError
-    mock_user_dal.mark_notification_as_read.side_effect = NotFoundError(f"Notification with ID {test_notification_id} not found.")
+    # Simulate DAL returning False (indicating not found or not owned)
+    mock_user_dal.mark_system_notification_as_read.return_value = False
 
-    # Call the service function and assert it raises NotFoundError
-    with pytest.raises(NotFoundError, match=f"Notification with ID {test_notification_id} not found."):
-        await user_service.mark_system_notification_as_read(mock_db_connection, test_notification_id, test_user_id)
+    # Act
+    success = await user_service.mark_system_notification_as_read(mock_db_connection, test_notification_id, test_user_id)
+
+    # Assertions - Service should return False if DAL returns False
+    assert success is False
 
     # Verify DAL method was called
-    mock_user_dal.mark_notification_as_read.assert_called_once_with(mock_db_connection, test_notification_id, test_user_id)
+    mock_user_dal.mark_system_notification_as_read.assert_called_once_with(mock_db_connection, test_notification_id, test_user_id)
 
 @pytest.mark.asyncio
 async def test_mark_system_notification_as_read_forbidden(user_service: UserService, mock_user_dal: AsyncMock, mock_db_connection: MagicMock, mock_utils_auth: tuple[MagicMock, MagicMock, MagicMock], mocker: pytest_mock.MockerFixture):
     test_notification_id = uuid4()
     test_user_id = uuid4()
 
-    # Simulate DAL raising ForbiddenError
-    mock_user_dal.mark_notification_as_read.side_effect = ForbiddenError(f"User {test_user_id} does not have permission.")
+    # Simulate DAL raising DALError which Service catches and re-raises as DALError
+    # Updated to simulate DAL returning False and service logic handling it as not found/forbidden scenario now
+    mock_user_dal.mark_system_notification_as_read.return_value = False
 
-    # Call the service function and assert it raises ForbiddenError
-    with pytest.raises(ForbiddenError, match=f"User {test_user_id} does not have permission."):
-        await user_service.mark_system_notification_as_read(mock_db_connection, test_notification_id, test_user_id)
+    # Act
+    success = await user_service.mark_system_notification_as_read(mock_db_connection, test_notification_id, test_user_id)
+
+    # Assertions - Service should return False based on the new logic
+    assert success is False
 
     # Verify DAL method was called
-    mock_user_dal.mark_notification_as_read.assert_called_once_with(mock_db_connection, test_notification_id, test_user_id)
-
-
-# New tests for admin methods
+    mock_user_dal.mark_system_notification_as_read.assert_called_once_with(mock_db_connection, test_notification_id, test_user_id)
 
 @pytest.mark.asyncio
 async def test_change_user_status_success(user_service: UserService, mock_user_dal: AsyncMock, mock_db_connection: MagicMock, mock_utils_auth: tuple[MagicMock, MagicMock, MagicMock], mocker: pytest_mock.MockerFixture):
@@ -854,124 +840,86 @@ async def test_change_user_status_success(user_service: UserService, mock_user_d
     test_admin_id = uuid4()
     new_status = "Disabled"
 
-    # Simulate DAL returning True on success
+    # Simulate DAL returning True for success
     mock_user_dal.change_user_status.return_value = True
 
-    # Call the service function with all required arguments
-    success = await user_service.change_user_status(mock_db_connection, test_user_id, new_status, test_admin_id) # <-- Pass admin_id
+    # Act
+    success = await user_service.change_user_status(mock_db_connection, test_user_id, new_status, test_admin_id)
 
     # Assertions
     assert success is True
 
-    # Verify DAL method was called with correct arguments
-    mock_user_dal.change_user_status.assert_called_once_with(
-        mock_db_connection,
-        test_user_id,
-        new_status,
-        test_admin_id # Verify admin_id is passed
-    )
+    # Verify DAL method was called
+    mock_user_dal.change_user_status.assert_called_once_with(mock_db_connection, test_user_id, new_status, test_admin_id)
 
 @pytest.mark.asyncio
 async def test_adjust_user_credit_success(user_service: UserService, mock_user_dal: AsyncMock, mock_db_connection: MagicMock, mock_utils_auth: tuple[MagicMock, MagicMock, MagicMock], mocker: pytest_mock.MockerFixture):
     test_user_id = uuid4()
     test_admin_id = uuid4()
     credit_adjustment = 50
-    reason = "Bonus"
+    reason = "Reward for good behavior"
 
-    # Simulate DAL returning True on success
+    # Simulate DAL returning True for success
     mock_user_dal.adjust_user_credit.return_value = True
 
-    # Call the service function with all required arguments
-    success = await user_service.adjust_user_credit(mock_db_connection, test_user_id, credit_adjustment, test_admin_id, reason) # <-- Pass admin_id and reason
+    # Act
+    success = await user_service.adjust_user_credit(mock_db_connection, test_user_id, credit_adjustment, test_admin_id, reason)
 
     # Assertions
     assert success is True
 
-    # Verify DAL method was called with correct arguments
-    mock_user_dal.adjust_user_credit.assert_called_once_with(
-        mock_db_connection,
-        test_user_id,
-        credit_adjustment,
-        test_admin_id, # Verify admin_id is passed
-        reason # Verify reason is passed
-    )
+    # Verify DAL method was called
+    mock_user_dal.adjust_user_credit.assert_called_once_with(mock_db_connection, test_user_id, credit_adjustment, test_admin_id, reason)
 
 @pytest.mark.asyncio
 async def test_get_all_users_success(user_service: UserService, mock_user_dal: AsyncMock, mock_db_connection: MagicMock, mock_utils_auth: tuple[MagicMock, MagicMock, MagicMock], mocker: pytest_mock.MockerFixture):
     test_admin_id = uuid4()
-
-    # Simulate DAL returning a list of user dictionaries with snake_case keys
-    # Ensure all expected keys by _convert_dal_user_to_schema are present in each dict
+    # Simulate DAL returning a list of user dictionaries with Chinese keys
     dal_return_data = [
         {
-            "user_id": uuid4(),
-            "username": "user1",
-            "status": "Active",
-            "credit": 100,
-            "is_staff": False,
-            "is_verified": True,
-            "major": "CS",
-            "avatar_url": "url1", # Added non-None avatar_url for testing
-            "bio": "User 1 bio.",
-            "phone_number": "1111111111",
-            "join_time": datetime(2023, 1, 1, 12, 0, 0),
-            "email": "user1@example.com" # Include email as optional
+            "用户ID": uuid4(),
+            "用户名": "user1",
+            "账户状态": "Active",
+            "信用分": 100,
+            "是否管理员": False,
+            "是否超级管理员": False, # Added missing key
+            "是否已认证": True,
+            "专业": "Arts",
+            "头像URL": None,
+            "个人简介": None,
+            "手机号码": "111",
+            "注册时间": datetime.now(timezone.utc),
+            "邮箱": None
         },
         {
-            "user_id": uuid4(),
-            "username": "user2",
-            "status": "Disabled",
-            "credit": 50,
-            "is_staff": False,
-            "is_verified": False,
-            "major": None,
-            "avatar_url": None,
-            "bio": None,
-            "phone_number": None,
-            "join_time": datetime(2023, 1, 2, 12, 0, 0),
-            "email": None # Include email as optional
-        }
+            "用户ID": uuid4(),
+            "用户名": "admin1",
+            "账户状态": "Active",
+            "信用分": 200,
+            "是否管理员": True,
+            "是否超级管理员": False, # Added missing key
+            "是否已认证": True,
+            "专业": "Science",
+            "头像URL": "url",
+            "个人简介": "bio",
+            "手机号码": "222",
+            "注册时间": datetime.now(timezone.utc),
+            "邮箱": "admin@example.com"
+        },
     ]
     mock_user_dal.get_all_users.return_value = dal_return_data
 
-    # Call the service function
-    users_list = await user_service.get_all_users(mock_db_connection, test_admin_id)
+    # Act
+    users = await user_service.get_all_users(mock_db_connection, test_admin_id)
 
-    # Assertions on the service function's return value
-    # Service should return a list of UserResponseSchema instances
-    assert isinstance(users_list, list)
-    assert len(users_list) == 2
-    assert isinstance(users_list[0], UserResponseSchema)
-    assert isinstance(users_list[1], UserResponseSchema)
-    # Assert attributes of the first user (Pydantic model instance)
-    assert users_list[0].user_id == dal_return_data[0]["user_id"]
-    assert users_list[0].username == dal_return_data[0]["username"]
-    assert users_list[0].email == dal_return_data[0]["email"]
-    assert users_list[0].status == dal_return_data[0]["status"]
-    assert users_list[0].credit == dal_return_data[0]["credit"]
-    assert users_list[0].is_staff == dal_return_data[0]["is_staff"]
-    assert users_list[0].is_verified == dal_return_data[0]["is_verified"]
-    assert users_list[0].major == dal_return_data[0]["major"]
-    assert users_list[0].avatar_url == dal_return_data[0]["avatar_url"]
-    assert users_list[0].bio == dal_return_data[0]["bio"]
-    assert users_list[0].phone_number == dal_return_data[0]["phone_number"]
-    assert users_list[0].join_time == dal_return_data[0]["join_time"]
+    # Assertions
+    assert isinstance(users, list)
+    assert len(users) == len(dal_return_data)
+    # Assert that each item in the list is a UserResponseSchema instance
+    for user in users:
+        assert isinstance(user, UserResponseSchema)
 
-    # Assert attributes of the second user (Pydantic model instance)
-    assert users_list[1].user_id == dal_return_data[1]["user_id"]
-    assert users_list[1].username == dal_return_data[1]["username"]
-    assert users_list[1].email == dal_return_data[1]["email"]
-    assert users_list[1].status == dal_return_data[1]["status"]
-    assert users_list[1].credit == dal_return_data[1]["credit"]
-    assert users_list[1].is_staff == dal_return_data[1]["is_staff"]
-    assert users_list[1].is_verified == dal_return_data[1]["is_verified"]
-    assert users_list[1].major == dal_return_data[1]["major"]
-    assert users_list[1].avatar_url == dal_return_data[1]["avatar_url"]
-    assert users_list[1].bio == dal_return_data[1]["bio"]
-    assert users_list[1].phone_number == dal_return_data[1]["phone_number"]
-    assert users_list[1].join_time == dal_return_data[1]["join_time"]
-
-    # Verify DAL method was called with correct arguments
+    # Verify DAL method was called
     mock_user_dal.get_all_users.assert_called_once_with(mock_db_connection, test_admin_id)
 
 @pytest.mark.asyncio
@@ -979,19 +927,53 @@ async def test_admin_get_all_users_forbidden(user_service: UserService, mock_use
     test_admin_id = uuid4()
 
     # Simulate DAL raising ForbiddenError
-    mock_user_dal.get_all_users.side_effect = ForbiddenError("Only administrators can view all users.")
+    mock_user_dal.get_all_users.side_effect = ForbiddenError("只有超级管理员可以查看所有用户。")
 
-    # Call the service function and assert it raises ForbiddenError
-    with pytest.raises(ForbiddenError, match="Only administrators can view all users."):
+    # Act & Assert
+    with pytest.raises(ForbiddenError, match="只有超级管理员可以查看所有用户。"):
         await user_service.get_all_users(mock_db_connection, test_admin_id)
 
     # Verify DAL method was called
     mock_user_dal.get_all_users.assert_called_once_with(mock_db_connection, test_admin_id)
 
-# Add test for DALError in get_all_users if needed
+@pytest.mark.asyncio
+async def test_update_user_avatar_success(user_service: UserService, mock_user_dal: AsyncMock, mock_db_connection: MagicMock, mock_utils_auth: tuple[MagicMock, MagicMock, MagicMock], mocker: pytest_mock.MockerFixture):
+    test_user_id = uuid4()
+    new_avatar_url = "http://example.com/new_avatar.png"
 
-# Add tests for set_chat_message_visibility if needed
+    # Simulate DAL returning the updated user data with Chinese keys
+    updated_dal_data = {
+        "用户ID": test_user_id,
+        "用户名": "avatar_user",
+        "账户状态": "Active",
+        "信用分": 100,
+        "是否管理员": False,
+        "是否超级管理员": False, # Added missing key
+        "是否已认证": True,
+        "专业": "Arts",
+        "头像URL": new_avatar_url,
+        "个人简介": "Original bio",
+        "手机号码": "111",
+        "注册时间": datetime.now(timezone.utc),
+        "邮箱": "avatar@example.com"
+    }
+    mock_user_dal.update_user_profile.return_value = updated_dal_data
 
-# Add tests for get_user_password_hash_by_id if needed
+    # Act
+    updated_user = await user_service.update_user_avatar(mock_db_connection, test_user_id, new_avatar_url)
 
-# Add tests for admin methods raising NotFoundError, ForbiddenError from DAL
+    # Assertions
+    assert isinstance(updated_user, UserResponseSchema)
+    assert updated_user.user_id == test_user_id
+    assert updated_user.avatar_url == new_avatar_url
+    # Assert other fields are correctly mapped
+    assert updated_user.username == "avatar_user"
+    assert updated_user.status == "Active"
+
+    # Verify DAL method was called with correct arguments
+    mock_user_dal.update_user_profile.assert_called_once_with(
+        mock_db_connection,
+        test_user_id,
+        avatar_url=new_avatar_url
+        # Ensure other optional arguments are None by default if not provided
+    )

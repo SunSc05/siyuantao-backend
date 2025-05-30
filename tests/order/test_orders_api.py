@@ -29,20 +29,20 @@ def test_create_order_success(client: TestClient, mock_order_service: AsyncMock,
     'mock_order_service' fixture 提供了 Service 层的 Mock。
     """
     order_data = OrderCreateSchema(product_id=uuid4(), quantity=1, shipping_address="123 Main St", contact_phone="555-1234", total_price=100.0)
-    mock_buyer_id = client.test_user_id
+    # mock_buyer_id is implicitly handled by the client fixture's get_current_user override
 
     expected_created_order_schema = OrderResponseSchema(
         order_id=uuid4(),
-        buyer_id=mock_buyer_id,
+        buyer_id=client.test_user_id,
         product_id=order_data.product_id,
         quantity=order_data.quantity,
         shipping_address=order_data.shipping_address,
         contact_phone=order_data.contact_phone,
-        total_price=100.0, # 假设Service层会计算或提供
+        total_price=order_data.total_price,
         status="Pending",
-        created_at=datetime.now(timezone.utc),
-        updated_at=datetime.now(timezone.utc),
-        seller_id=uuid4(), # 假设Service层会填充
+        created_at=datetime.now(timezone.utc).replace(microsecond=0),
+        updated_at=datetime.now(timezone.utc).replace(microsecond=0),
+        seller_id=uuid4(),
         trade_id=None,
         complete_time=None,
         cancel_time=None,
@@ -60,7 +60,7 @@ def test_create_order_success(client: TestClient, mock_order_service: AsyncMock,
     mock_order_service.create_order.assert_called_once_with(
         mocker.ANY,
         order_data,
-        mock_buyer_id
+        client.test_user_id
     )
 
 def test_create_order_value_error(client: TestClient, mock_order_service: AsyncMock, mocker: pytest_mock.MockerFixture):
@@ -84,9 +84,21 @@ def test_get_order_by_id_success(client: TestClient, mock_order_service: AsyncMo
     """
     order_id = uuid4()
     expected_order = OrderResponseSchema(
-        order_id=order_id, buyer_id=client.test_user_id, product_id=uuid4(), quantity=1, total_price=100.0,
-        status="Pending", created_at=datetime.now(timezone.utc), updated_at=datetime.now(timezone.utc),
-        seller_id=uuid4(), trade_id=None
+        order_id=order_id,
+        buyer_id=client.test_user_id,
+        product_id=uuid4(),
+        quantity=1,
+        total_price=100.0,
+        status="Pending",
+        created_at=datetime.now(timezone.utc).replace(microsecond=0),
+        updated_at=datetime.now(timezone.utc).replace(microsecond=0),
+        seller_id=uuid4(),
+        trade_id=None,
+        shipping_address="456 Oak Ave, Otherville, USA",
+        contact_phone="555-5678",
+        complete_time=None,
+        cancel_time=None,
+        cancel_reason=None
     )
     mock_order_service.get_order_by_id.return_value = expected_order
 
@@ -225,10 +237,13 @@ def test_update_order_status_success(client: TestClient, mock_order_service: Asy
         contact_phone="555-1234",
         total_price=100.0,
         status="Completed",
-        created_at=datetime.now(timezone.utc),
-        updated_at=datetime.now(timezone.utc),
+        created_at=datetime.now(timezone.utc).replace(microsecond=0),
+        updated_at=datetime.now(timezone.utc).replace(microsecond=0),
         seller_id=uuid4(),
-        trade_id=None
+        trade_id=None,
+        complete_time=datetime.now(timezone.utc).replace(microsecond=0),
+        cancel_time=None,
+        cancel_reason=None
     )
     mock_order_service.update_order_status.return_value = expected_updated_order_schema
 
@@ -243,7 +258,7 @@ def test_update_order_status_success(client: TestClient, mock_order_service: Asy
         mocker.ANY,
         order_id=order_id,
         new_status=status_update_data.status,
-        user_id=mock_user_id
+        user_id=client.test_user_id
     )
 
 def test_update_order_status_value_error(client: TestClient, mock_order_service: AsyncMock, mocker: pytest_mock.MockerFixture):
@@ -267,30 +282,59 @@ def test_get_my_orders_success_with_orders(client: TestClient, mock_order_servic
     测试成功获取当前用户订单列表 (有订单)。
     """
     mock_user_id = client.test_user_id
-    expected_orders = [
+    orders_list = [
         OrderResponseSchema(
-            order_id=uuid4(), buyer_id=mock_user_id, product_id=uuid4(), quantity=1, total_price=50.0,
-            status="Pending", created_at=datetime.now(timezone.utc), updated_at=datetime.now(timezone.utc),
-            seller_id=uuid4(), trade_id=None
+            order_id=uuid4(),
+            buyer_id=client.test_user_id,
+            product_id=uuid4(),
+            quantity=1,
+            shipping_address="Addr1",
+            contact_phone="Phone1",
+            total_price=100.0,
+            status="Pending",
+            created_at=datetime.now(timezone.utc).replace(microsecond=0),
+            updated_at=datetime.now(timezone.utc).replace(microsecond=0),
+            seller_id=uuid4(),
+            trade_id=None,
+            complete_time=None,
+            cancel_time=None,
+            cancel_reason=None
         ),
         OrderResponseSchema(
-            order_id=uuid4(), buyer_id=mock_user_id, product_id=uuid4(), quantity=2, total_price=150.0,
-            status="Completed", created_at=datetime.now(timezone.utc), updated_at=datetime.now(timezone.utc),
-            seller_id=uuid4(), trade_id=None
-        )
+            order_id=uuid4(),
+            buyer_id=client.test_user_id,
+            product_id=uuid4(),
+            quantity=2,
+            shipping_address="Addr2",
+            contact_phone="Phone2",
+            total_price=200.0,
+            status="Completed",
+            created_at=datetime.now(timezone.utc).replace(microsecond=0),
+            updated_at=datetime.now(timezone.utc).replace(microsecond=0),
+            seller_id=uuid4(),
+            trade_id=uuid4(),
+            complete_time=datetime.now(timezone.utc).replace(microsecond=0),
+            cancel_time=None,
+            cancel_reason=None
+        ),
     ]
-    mock_order_service.get_orders_by_user.return_value = expected_orders
+    mock_order_service.get_orders_by_user.return_value = orders_list
 
     response = client.get("/api/v1/orders/mine")
 
     assert response.status_code == 200
     response_data = response.json()
-    expected_json_data = [order.model_dump(mode='json', by_alias=True) for order in expected_orders]
+    # Convert the list of schemas to a list of dictionaries for comparison
+    expected_json_data = [order.model_dump(mode='json', by_alias=True) for order in orders_list]
     assert response_data == expected_json_data
 
     mock_order_service.get_orders_by_user.assert_called_once_with(
         mocker.ANY,
-        mock_user_id
+        client.test_user_id,
+        is_seller=False,
+        status=None,
+        page_number=1,
+        page_size=10
     )
 
 def test_get_my_orders_success_no_orders(client: TestClient, mock_order_service: AsyncMock, mocker: pytest_mock.MockerFixture):
@@ -303,4 +347,11 @@ def test_get_my_orders_success_no_orders(client: TestClient, mock_order_service:
 
     assert response.status_code == 200
     assert response.json() == []
-    mock_order_service.get_orders_by_user.assert_called_once()
+    mock_order_service.get_orders_by_user.assert_called_once_with(
+        mocker.ANY,
+        client.test_user_id,
+        is_seller=False,
+        status=None,
+        page_number=1,
+        page_size=10
+    )

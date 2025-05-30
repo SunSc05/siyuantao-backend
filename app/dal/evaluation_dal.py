@@ -1,13 +1,13 @@
 import pyodbc
-from typing import Optional, Callable, Awaitable
+from typing import Optional, Callable, Awaitable, List, Dict, Any
 from uuid import UUID
 
-from app.exceptions import DALError
+from app.exceptions import DALError, NotFoundError, IntegrityError
 
 class EvaluationDAL:
     """Data Access Layer for Evaluations."""
 
-    def __init__(self, execute_query_func: Callable[..., Awaitable[Optional[list[tuple]]]]) -> None:
+    def __init__(self, execute_query_func: Callable[..., Awaitable[Optional[list[tuple]] | Optional[Dict[str, Any]] | Optional[List[Dict[str, Any]]]]]) -> None:
         """
         Initializes the EvaluationDAL with an asynchronous query execution function.
 
@@ -16,7 +16,7 @@ class EvaluationDAL:
                                 It should accept a SQL query string and parameters, 
                                 and return an optional list of tuples (rows).
         """
-        self.execute_query = execute_query_func
+        self.execute_query_func = execute_query_func
 
     async def create_evaluation(
         self,
@@ -43,10 +43,7 @@ class EvaluationDAL:
         params = (order_id, str(buyer_id), rating, comment)
         
         try:
-            async with conn.cursor() as cursor:
-                await cursor.execute(sql, params)
-            # No rows are returned by sp_CreateEvaluation for successful execution
-            # The stored procedure handles its own transaction commit/rollback and error raising.
+            await self.execute_query_func(conn, sql, params, fetchone=False, fetchall=False)
         except pyodbc.Error as e:
             # Log the error e
             # Convert pyodbc.Error to a more generic DALError or a specific one
@@ -60,6 +57,51 @@ class EvaluationDAL:
             error_message = f"An unexpected error occurred while creating evaluation for order {order_id}: {e}"
             # Consider logging the full error details here
             raise DALError(error_message) from e
+
+    async def get_evaluation_by_id(
+        self,
+        conn: pyodbc.Connection,
+        evaluation_id: UUID
+    ) -> Optional[Dict[str, Any]]:
+        """Fetches a single evaluation by its ID."""
+        sql = "{CALL sp_GetEvaluationByID(?)}"
+        params = (evaluation_id,)
+        try:
+            result = await self.execute_query_func(conn, sql, params, fetchone=True)
+            # Assuming SP returns a dictionary on success or None if not found
+            return result if isinstance(result, dict) else None
+        except pyodbc.Error as ex:
+            raise DALError(f"Database error fetching evaluation by ID: {ex}") from ex
+
+    async def get_evaluations_by_product_id(
+        self,
+        conn: pyodbc.Connection,
+        product_id: UUID
+    ) -> List[Dict[str, Any]]:
+        """Fetches all evaluations for a specific product."""
+        sql = "{CALL sp_GetEvaluationsByProductID(?)}"
+        params = (product_id,)
+        try:
+            result = await self.execute_query_func(conn, sql, params, fetchall=True)
+            # Assuming SP returns a list of dictionaries or an empty list
+            return result if isinstance(result, list) else []
+        except pyodbc.Error as ex:
+            raise DALError(f"Database error fetching evaluations by product ID: {ex}") from ex
+
+    async def get_evaluations_by_buyer_id(
+        self,
+        conn: pyodbc.Connection,
+        buyer_id: UUID
+    ) -> List[Dict[str, Any]]:
+        """Fetches all evaluations made by a specific buyer."""
+        sql = "{CALL sp_GetEvaluationsByBuyerID(?)}"
+        params = (buyer_id,)
+        try:
+            result = await self.execute_query_func(conn, sql, params, fetchall=True)
+            # Assuming SP returns a list of dictionaries or an empty list
+            return result if isinstance(result, list) else []
+        except pyodbc.Error as ex:
+            raise DALError(f"Database error fetching evaluations by buyer ID: {ex}") from ex
 
 # Example of how this DAL might be used (typically in a Service layer):
 # async def example_usage(db_conn_provider, order_id, buyer_id, rating, comment):

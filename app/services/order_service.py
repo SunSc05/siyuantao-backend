@@ -306,20 +306,25 @@ class OrderService:
         Args:
             conn: The database connection object.
             user_id: The ID of the user whose orders are to be retrieved.
-            user_role: Specifies if the user is a 'buyer' or 'seller' for these orders.
+            is_seller: Boolean indicating if the user should be treated as a seller (True) or buyer (False) for the query.
+            status: Optional status to filter orders by.
+            page_number: The page number for pagination.
+            page_size: The number of items per page for pagination.
 
         Returns:
             A list of orders.
-        
+
         Raises:
             DALError: If there's an issue with database interaction.
-            ValueError: If user_role is invalid.
         """
-        if user_role not in ['buyer', 'seller']:
-            raise ValueError("Invalid user_role specified. Must be 'buyer' or 'seller'.")
-        
+        # Determine the role string based on is_seller boolean
+        role_string = 'seller' if is_seller else 'buyer'
+
+        # TODO: Add authorization check here - Ensure the requesting user is the user_id or an admin.
+
         try:
-            orders = await self.order_dal.get_orders_by_user(conn, user_id, user_role)
+            # Pass the determined role_string to the DAL method
+            orders = await self.order_dal.get_orders_by_user(conn, user_id, role_string, status, page_number, page_size)
             return orders # Assuming DAL method returns a list of OrderResponseSchema compatible objects
         except pyodbc.Error as db_err:
             raise DALError(f"Database error retrieving orders for user {user_id}: {db_err}") from db_err

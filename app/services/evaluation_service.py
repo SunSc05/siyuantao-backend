@@ -73,7 +73,9 @@ class EvaluationService:
             # Call DAL to execute sp_CreateEvaluation
             # sp_CreateEvaluation might not return the created evaluation ID or details directly.
             # It might just perform the insert and raise SQL errors for issues.
-            await self.evaluation_dal.create_evaluation(
+            # Assuming DAL's create_evaluation returns the newly created evaluation ID or the full dictionary
+            # If it returns the ID, fetch the full evaluation:
+            created_evaluation_data = await self.evaluation_dal.create_evaluation(
                 conn=conn,
                 order_id=evaluation_data.order_id,
                 buyer_id=buyer_id, # Pass the authenticated buyer_id
@@ -81,31 +83,23 @@ class EvaluationService:
                 comment=evaluation_data.comment
             )
 
-            # If sp_CreateEvaluation doesn't return the ID, and you need to return the full EvaluationResponseSchema,
-            # you'd need a way to retrieve it. This could be tricky if there's no unique ID returned.
-            # For now, let's assume the task is just to create and not necessarily return the full object,
-            # or that the DAL method is adapted to fetch it (e.g., using SCOPE_IDENTITY() if it's an auto-increment ID).
-            # If an ID is returned or can be fetched:
-            # created_eval_id = ... 
-            # evaluation = await self.evaluation_dal.get_evaluation_by_id(conn, created_eval_id)
+            # The DAL's create_evaluation should ideally return the full evaluation data, including the generated ID.
+            # If it returns the ID only, you would fetch it here:
+            # created_evaluation_id = created_evaluation_data.get('EvaluationID')
+            # if not created_evaluation_id:
+            #      raise DALError("Evaluation creation failed: Could not retrieve new evaluation ID.")
+            #
+            # evaluation = await self.evaluation_dal.get_evaluation_by_id(conn, UUID(created_evaluation_id))
             # if not evaluation:
             #     raise NotFoundError("Evaluation not found after creation.")
             # return evaluation
-            
-            # For simplicity, if sp_CreateEvaluation doesn't return data for EvaluationResponseSchema,
-            # we might need to adjust the return type or how it's constructed.
-            # A common pattern is for the SP to output the ID, then fetch.
-            # If the SP only confirms success/failure via error, the service might return a simpler success message or the input data.
-            # Let's construct a conceptual response based on input, assuming success if no error.
-            # This is a placeholder; a real implementation would need a robust way to get the created entity.
-            return EvaluationResponseSchema(
-                evaluation_id=-1, # Placeholder, should be the actual ID from DB
-                order_id=evaluation_data.order_id,
-                buyer_id=buyer_id,
-                rating=evaluation_data.rating,
-                comment=evaluation_data.comment,
-                created_at="..." # Placeholder, should be actual timestamp
-            )
+
+            # Assuming DAL.create_evaluation now returns the full evaluation dictionary on success:
+            if not created_evaluation_data or not isinstance(created_evaluation_data, dict):
+                raise DALError("Evaluation creation failed: Unexpected response from database.")
+
+            # Convert the dictionary result to the EvaluationResponseSchema
+            return EvaluationResponseSchema(**created_evaluation_data)
 
         except pyodbc.Error as db_err:
             # Log db_err
@@ -117,6 +111,35 @@ class EvaluationService:
         except Exception as e:
             # Log e
             raise DALError(f"An unexpected error occurred during evaluation creation: {e}") from e
+
+    async def get_evaluations_by_product_id(
+        self,
+        conn: pyodbc.Connection,
+        product_id: UUID
+    ) -> List[EvaluationResponseSchema]:
+        """获取指定商品的评价列表。"""
+        evaluations_data = await self.evaluation_dal.get_evaluations_by_product_id(conn, product_id)
+        return [EvaluationResponseSchema(**e) for e in evaluations_data]
+
+    async def get_evaluations_by_buyer_id(
+        self,
+        conn: pyodbc.Connection,
+        buyer_id: UUID
+    ) -> List[EvaluationResponseSchema]:
+        """获取指定买家的评价列表。"""
+        evaluations_data = await self.evaluation_dal.get_evaluations_by_buyer_id(conn, buyer_id)
+        return [EvaluationResponseSchema(**e) for e in evaluations_data]
+
+    async def get_evaluation_by_id(
+        self,
+        conn: pyodbc.Connection,
+        evaluation_id: UUID
+    ) -> Optional[EvaluationResponseSchema]:
+        """根据评价ID获取评价详情。"""
+        evaluation_data = await self.evaluation_dal.get_evaluation_by_id(conn, evaluation_id)
+        if evaluation_data:
+            return EvaluationResponseSchema(**evaluation_data)
+        return None
 
     # Potentially, add other methods like:
     # async def get_evaluations_for_order(self, conn: pyodbc.Connection, order_id: int) -> List[EvaluationResponseSchema]: ...

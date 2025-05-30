@@ -3,6 +3,8 @@ import pyodbc
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 from datetime import datetime, timezone
+from fastapi.testclient import TestClient
+import pytest_mock
 
 from app.services.order_service import OrderService
 from app.dal.orders_dal import OrdersDAL # 假设 OrderDAL 在 app.dal.order_dal 中
@@ -72,6 +74,20 @@ def mock_orders_list(base_mock_order_response_schema):
         base_mock_order_response_schema.model_copy(update={"order_id": uuid4(), "status": "Confirmed"})
     ]
 
+@pytest.mark.asyncio
+async def test_get_order_by_id_not_found(client: TestClient, mock_order_service: AsyncMock, mocker: pytest_mock.MockerFixture):
+    """
+    测试获取不存在的订单。
+    """
+    order_id = uuid4()
+    # Mock DAL get_order_by_id to return None
+    mock_order_dal.get_order_by_id.return_value = None
+
+    with pytest.raises(NotFoundError, match=f"Order with ID {order_id} not found."):
+        await order_service.get_order_by_id(mock_db_connection, order_id, client.test_user_id) # Pass requesting_user_id
+
+    mock_order_dal.get_order_by_id.assert_called_once_with(mock_db_connection, order_id)
+
 # --- Test create_order ---
 @pytest.mark.asyncio
 async def test_create_order_success(
@@ -93,7 +109,8 @@ async def test_create_order_success(
         "order_id": expected_order_id, # 确保使用返回的订单ID
         "status": "PendingConfirmation" # 确保状态正确
     })
-    mock_order_dal.get_order_by_id.return_value = mock_created_order
+    # Mock get_order_by_id to return a dictionary, not a schema instance
+    mock_order_dal.get_order_by_id.return_value = mock_created_order.model_dump(mode='json')
 
     created_order = await order_service.create_order(mock_db_connection, mock_order_create_schema, TEST_BUYER_ID)
 
@@ -139,7 +156,8 @@ async def test_create_order_not_found_after_creation(
 ):
     expected_order_id = TEST_ORDER_ID
     mock_order_dal.create_order.return_value = expected_order_id
-    mock_order_dal.get_order_by_id.return_value = None # Simulate order not found after creation
+    # Mock get_order_by_id to return None, simulating not found
+    mock_order_dal.get_order_by_id.return_value = None
 
     with pytest.raises(NotFoundError, match=f"Order with ID {expected_order_id} not found after creation."):
         await order_service.create_order(mock_db_connection, mock_order_create_schema, TEST_BUYER_ID)
@@ -348,62 +366,98 @@ async def test_reject_order_success(
 # --- Test get_orders_by_user ---
 @pytest.mark.asyncio
 async def test_get_orders_by_user_buyer_success(
-    order_service: OrderService, 
-    mock_order_dal: AsyncMock, 
+    order_service: OrderService,
+    mock_order_dal: AsyncMock,
     mock_db_connection: MagicMock,
     mock_orders_list: list[OrderResponseSchema]
 ):
-    user_id = TEST_BUYER_ID
-    user_role = "buyer"
-    mock_order_dal.get_orders_by_user.return_value = mock_orders_list
-    result = await order_service.get_orders_by_user(mock_db_connection, user_id, user_role)
-    assert result == mock_orders_list
-    mock_order_dal.get_orders_by_user.assert_called_once_with(mock_db_connection, user_id, is_seller=(user_role == "seller"))
+    """Test successfully getting orders by buyer ID."""
+    # Arrange
+    user_id = uuid4()
+
+    # Simulate mock_order_dal returning a list of order dictionaries
+    mock_dal_return_value = [order.model_dump(mode='json') for order in mock_orders_list]
+    mock_order_dal.get_orders_by_user.return_value = mock_dal_return_value
+
+    orders = await order_service.get_orders_by_user(mock_db_connection, user_id, is_seller=False)
+
+    # The Service should convert the dictionaries to schemas
+    assert len(orders) == len(mock_orders_list)
+    assert all(isinstance(order, OrderResponseSchema) for order in orders)
+    # Compare the returned schemas with the expected schemas
+    assert orders == mock_orders_list
+
+    mock_order_dal.get_orders_by_user.assert_called_once_with(
+        mock_db_connection,
+        user_id=user_id,
+        is_seller=False,
+        status=None, # Default status
+        page_number=1, # Default page
+        page_size=10 # Default size
+    )
 
 @pytest.mark.asyncio
 async def test_get_orders_by_user_seller_success(
-    order_service: OrderService, 
-    mock_order_dal: AsyncMock, 
+    order_service: OrderService,
+    mock_order_dal: AsyncMock,
     mock_db_connection: MagicMock,
     mock_orders_list: list[OrderResponseSchema]
 ):
-    user_id = TEST_SELLER_ID
-    user_role = "seller"
-    mock_order_dal.get_orders_by_user.return_value = mock_orders_list
-    result = await order_service.get_orders_by_user(mock_db_connection, user_id, user_role)
-    assert result == mock_orders_list
-    mock_order_dal.get_orders_by_user.assert_called_once_with(mock_db_connection, user_id, is_seller=(user_role == "seller"))
+    """Test successfully getting orders by seller ID."""
+    # Arrange
+    user_id = uuid4()
+
+    # Simulate mock_order_dal returning a list of order dictionaries
+    mock_dal_return_value = [order.model_dump(mode='json') for order in mock_orders_list]
+    mock_order_dal.get_orders_by_user.return_value = mock_dal_return_value
+
+    orders = await order_service.get_orders_by_user(mock_db_connection, user_id, is_seller=True)
+
+    # The Service should convert the dictionaries to schemas
+    assert len(orders) == len(mock_orders_list)
+    assert all(isinstance(order, OrderResponseSchema) for order in orders)
+    # Compare the returned schemas with the expected schemas
+    assert orders == mock_orders_list
+
+    mock_order_dal.get_orders_by_user.assert_called_once_with(
+        mock_db_connection,
+        user_id=user_id,
+        is_seller=True,
+        status=None, # Default status
+        page_number=1, # Default page
+        page_size=10 # Default size
+    )
 
 @pytest.mark.asyncio
 async def test_get_orders_by_user_no_orders(
-    order_service: OrderService, 
-    mock_order_dal: AsyncMock, 
+    order_service: OrderService,
+    mock_order_dal: AsyncMock,
     mock_db_connection: MagicMock
 ):
+    """Test getting no orders for a user."""
+    # Arrange
     user_id = uuid4()
-    user_role = "buyer"
+
+    # Simulate mock_order_dal returning an empty list
     mock_order_dal.get_orders_by_user.return_value = []
-    result = await order_service.get_orders_by_user(mock_db_connection, user_id, user_role)
+
+    result = await order_service.get_orders_by_user(mock_db_connection, user_id, is_seller=False)
     assert result == []
-    mock_order_dal.get_orders_by_user.assert_called_once_with(mock_db_connection, user_id, is_seller=(user_role == "seller"))
+    mock_order_dal.get_orders_by_user.assert_called_once_with(mock_db_connection, user_id, is_seller=False)
 
 @pytest.mark.asyncio
 async def test_get_orders_by_user_dal_exception(
-    order_service: OrderService, 
-    mock_order_dal: AsyncMock, 
+    order_service: OrderService,
+    mock_order_dal: AsyncMock,
     mock_db_connection: MagicMock
 ):
+    """Test getting orders by user failing due to a DAL exception."""
+    # Arrange
     user_id = uuid4()
-    user_role = "buyer"
-    mock_order_dal.get_orders_by_user.side_effect = DALError("DB Error")
-    with pytest.raises(DALError, match="DB Error"):
-        await order_service.get_orders_by_user(mock_db_connection, user_id, user_role)
-    mock_order_dal.get_orders_by_user.assert_called_once_with(mock_db_connection, user_id, is_seller=(user_role == "seller"))
 
-@pytest.fixture
-def mock_orders_list(base_mock_order_response_schema):
-    """Fixture to mock a list of OrderResponseSchema instances."""
-    return [
-        base_mock_order_response_schema.model_copy(update={"order_id": uuid4(), "status": "PendingConfirmation"}),
-        base_mock_order_response_schema.model_copy(update={"order_id": uuid4(), "status": "Confirmed"})
-    ]
+    # Simulate mock_order_dal raising a DALError
+    mock_order_dal.get_orders_by_user.side_effect = DALError("Database error")
+
+    with pytest.raises(DALError, match="Database error"):
+        await order_service.get_orders_by_user(mock_db_connection, user_id, is_seller=False)
+    mock_order_dal.get_orders_by_user.assert_called_once_with(mock_db_connection, user_id, is_seller=False)

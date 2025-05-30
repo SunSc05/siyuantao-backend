@@ -156,7 +156,8 @@ async def verify_email_api(
         if "魔术链接无效或已过期" in str(e):
              raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"邮箱验证失败: {e}")
         if "账户已被禁用" in str(e):
-             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"邮箱验证失败: {e}")
+             # Account disabled should return 403 Forbidden, not 400 Bad Request
+             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"邮箱验证失败: {e}")
         # Handle other potential DAL errors as 500 or another appropriate status
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"数据库操作失败: {e}")
     except (AuthenticationError, ForbiddenError) as e:
