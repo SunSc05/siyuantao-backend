@@ -1,5 +1,5 @@
 # app/routers/users.py
-from fastapi import APIRouter, Depends, status, HTTPException
+from fastapi import APIRouter, Depends, status, HTTPException, UploadFile, File
 # from app.schemas.user_schemas import UserCreate, UserResponse, UserLogin, Token, UserUpdate, RequestVerificationEmail, VerifyEmail, UserPasswordUpdate # Import schemas from here
 from app.schemas.user_schemas import (
     UserResponseSchema, 
@@ -27,6 +27,9 @@ from app.dependencies import (
     get_current_super_admin_user # Added for super admin authentication
 )
 from app.exceptions import NotFoundError, IntegrityError, DALError, AuthenticationError, ForbiddenError # Import necessary exceptions
+
+# Import file upload utility
+from ..utils.file_upload import save_upload_file, UPLOAD_DIR # Import UPLOAD_DIR to construct the URL
 
 import logging # Import logging
 logger = logging.getLogger(__name__) # Get logger instance
@@ -121,6 +124,43 @@ async def update_current_user_password(
          )
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"服务器内部错误: {e}")
+
+@router.put("/me/avatar", response_model=UserResponseSchema)
+async def upload_my_avatar(
+    # User needs to be authenticated
+    current_user: dict = Depends(get_current_authenticated_user),
+    # Receive the uploaded file
+    avatar_file: UploadFile = File(...),
+    # Dependencies for database connection and user service
+    conn: pyodbc.Connection = Depends(get_db_connection),
+    user_service: UserService = Depends(get_user_service)
+):
+    """
+    上传或更新当前登录用户的头像。
+    """
+    user_id = current_user['user_id']
+    
+    try:
+        # 1. Save the uploaded file using the utility function
+        file_path = await save_upload_file(avatar_file)
+        
+        # 2. Construct the URL for the saved file
+        file_name = os.path.basename(file_path)
+        avatar_url = f"/{UPLOAD_DIR}/{file_name}"
+        
+        # 3. Call the UserService method to update the user's avatar URL in the database
+        updated_user = await user_service.update_user_avatar(conn, user_id, avatar_url)
+        
+        # Return the updated user profile (which includes the new avatar URL)
+        return updated_user
+        
+    except NotFoundError as e:
+        # This should be caught by the service layer, but handle as a safeguard
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except Exception as e:
+        # Catch any other exceptions during file upload or service call
+        logger.exception(f"Error uploading avatar for user {user_id}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to upload avatar: {e}")
 
 # Admin endpoints for user management by ID
 

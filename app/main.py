@@ -13,6 +13,9 @@ from app.exceptions import (
 import logging
 from logging.config import dictConfig
 
+# Import StaticFiles
+from fastapi.staticfiles import StaticFiles
+
 # Import uvicorn.logging for potential formatters
 try:
     import uvicorn.logging
@@ -23,6 +26,7 @@ except ImportError:
 from app.routers import users, auth # 暂时只导入已存在的路由
 from app.routers import product_routes  # 添加商品路由
 # from app.routers import  orders # 这些文件后面会创建
+from app.routers import upload_routes # 导入图片上传路由
 
 # Define a comprehensive logging configuration dictionary
 LOGGING_CONFIG = {
@@ -154,6 +158,11 @@ app.include_router(product_routes.router, prefix="/api/v1/products", tags=["Prod
 # app.include_router(orders.router, prefix="/api/v1/orders", tags=["Orders"]) # 暂时注释掉未创建的路由
 app.include_router(auth.router, prefix="/api/v1")
 # ... 注册其他模块路由
+app.include_router(upload_routes.router) # 注册图片上传路由
+
+# Configure static file serving for uploaded images
+# The 'uploads' directory will be served at the '/uploads' URL path
+app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 @app.get("/")
 async def root():

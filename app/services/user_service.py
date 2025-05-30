@@ -539,6 +539,46 @@ class UserService:
             logger.error(f"Unexpected error getting all users for admin {admin_id}: {e}")
             raise e
 
+    async def update_user_avatar(self, conn: pyodbc.Connection, user_id: UUID, avatar_url: str) -> UserResponseSchema:
+        """
+        Service layer function to update user's avatar URL.
+        
+        Args:
+            conn: Database connection object.
+            user_id: The UUID of the user.
+            avatar_url: The new avatar URL.
+            
+        Returns:
+            The updated user's UserResponseSchema.
+            
+        Raises:
+            NotFoundError: If the user is not found.
+            DALError: If a database error occurs.
+        """
+        logger.info(f"Attempting to update avatar for user ID: {user_id} with URL: {avatar_url}")
+        try:
+            # Reuse update_user_profile DAL method which supports avatar_url
+            updated_dal_user = await self.user_dal.update_user_profile(conn, user_id, avatar_url=avatar_url)
+            logger.debug(f"DAL.update_user_profile returned: {updated_dal_user}")
+            
+            if not updated_dal_user:
+                # This should be caught by NotFoundError from DAL, but as a safeguard
+                 logger.warning(f"User not found during avatar update for ID: {user_id}")
+                 raise NotFoundError(f"User with ID {user_id} not found for avatar update.")
+            
+            logger.debug(f"Converting updated DAL user data to schema for user ID: {user_id}")
+            return self._convert_dal_user_to_schema(updated_dal_user)
+            
+        except NotFoundError as e:
+             logger.error(f"NotFoundError during avatar update for user ID {user_id}: {e}")
+             raise e # Re-raise NotFoundError
+        except DALError as e:
+             logger.error(f"Database error during avatar update for user ID {user_id}: {e}")
+             raise DALError(f"Database error during avatar update: {e}") from e
+        except Exception as e:
+             logger.error(f"Unexpected error during avatar update for user ID {user_id}: {e}")
+             raise e
+
     def _convert_dal_user_to_schema(self, dal_user_data: dict) -> UserResponseSchema:
         """
         Helper to convert a dictionary row from DAL into a UserResponseSchema.

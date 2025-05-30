@@ -457,4 +457,104 @@ BEGIN
         JoinTime AS 注册时间
     FROM [User];
 END;
+GO
+
+-- sp_BatchReviewProducts: 管理员批量审核商品
+-- 输入: @productIds NVARCHAR(MAX) (逗号分隔的商品ID字符串), @adminId UNIQUEIDENTIFIER, @newStatus NVARCHAR(20) ('Active'或'Rejected'), @reason NVARCHAR(500) (如果拒绝)
+DROP PROCEDURE IF EXISTS [sp_BatchReviewProducts];
+GO
+CREATE PROCEDURE [sp_BatchReviewProducts]
+    @productIds NVARCHAR(MAX),
+    @adminId UNIQUEIDENTIFIER,
+    @newStatus NVARCHAR(20), -- 'Active' 或 'Rejected'
+    @reason NVARCHAR(500) = NULL -- 如果拒绝，提供原因
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON; -- 遇到错误自动回滚
+
+    DECLARE @adminIsStaff BIT;
+    DECLARE @successCount INT = 0;
+
+    -- 检查 @adminId 对应的用户是否为管理员
+    SELECT @adminIsStaff = IsStaff FROM [User] WHERE UserID = @adminId;
+    IF @adminIsStaff IS NULL OR @adminIsStaff = 0
+    BEGIN
+        RAISERROR('无权限执行此操作，只有管理员可以批量审核商品。', 16, 1);
+        RETURN;
+    END
+
+    -- 检查 @newStatus 是否有效
+    IF @newStatus NOT IN ('Active', 'Rejected')
+    BEGIN
+        RAISERROR('无效的审核状态，状态必须是 Active 或 Rejected。', 16, 1);
+        RETURN;
+    END
+
+     -- 如果状态是 Rejected 但未提供原因
+    IF @newStatus = 'Rejected' AND (@reason IS NULL OR LTRIM(RTRIM(@reason)) = '')
+    BEGIN
+         RAISERROR('拒绝商品必须提供原因。', 16, 1);
+         RETURN;
+    END
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        -- 使用临时表或表变量来存储解析后的 ProductID
+        DECLARE @ProductIDsTable TABLE (ProductID UNIQUEIDENTIFIER);
+
+        -- 解析逗号分隔的 @productIds 字符串并插入临时表
+        -- 这部分可以使用 STRING_SPLIT 函数 (SQL Server 2016及以上) 或自定义解析逻辑
+        -- 假设使用 STRING_SPLIT
+        INSERT INTO @ProductIDsTable (ProductID)
+        SELECT TRY_CAST(value AS UNIQUEIDENTIFIER)
+        FROM STRING_SPLIT(@productIds, ',')
+        WHERE TRY_CAST(value AS UNIQUEIDENTIFIER) IS NOT NULL; -- 忽略无效的UUID字符串
+
+        -- 更新符合条件的商品状态
+        UPDATE P
+        SET
+            Status = @newStatus
+        FROM [Product] P
+        JOIN @ProductIDsTable T ON P.ProductID = T.ProductID
+        WHERE P.Status = 'PendingReview'; -- 只处理待审核状态的商品
+
+        -- 获取成功更新的商品数量
+        SET @successCount = @@ROWCOUNT;
+
+        -- 插入系统通知 (批量通知)
+        -- 可以为每个成功审核的商品发送通知，或者发送一个批量通知
+        -- 批量通知需要获取这些商品的OwnerID和ProductName
+        INSERT INTO [SystemNotification] (NotificationID, UserID, Title, Content, CreateTime, IsRead)
+        SELECT
+            NEWID(),
+            P.OwnerID,
+            CASE
+                WHEN @newStatus = 'Active' THEN N'商品批量审核通过'
+                WHEN @newStatus = 'Rejected' THEN N'商品批量审核未通过'
+            END,
+            CASE
+                WHEN @newStatus = 'Active' THEN N'您的部分商品已批量审核通过，当前状态为 Active (在售)。' -- 实际内容可以更详细，列出商品名称等
+                WHEN @newStatus = 'Rejected' THEN N'您的部分商品未通过批量审核，状态为 Rejected (已拒绝)。原因: ' + ISNULL(@reason, N'未说明') -- 同样，实际内容可以更详细
+            END,
+            GETDATE(),
+            0
+        FROM [Product] P
+        JOIN @ProductIDsTable T ON P.ProductID = T.ProductID -- 仅为本次处理的商品创建通知
+        WHERE P.Status = @newStatus; -- 只通知那些状态确实被改变了的商品 (已从PendingReview变为新状态)
+
+
+        COMMIT TRANSACTION;
+
+        -- 返回成功处理的数量
+        SELECT @successCount AS SuccessCount;
+
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0
+            ROLLBACK TRANSACTION;
+        THROW; -- 重新抛出捕获的错误
+    END CATCH
+END;
 GO 

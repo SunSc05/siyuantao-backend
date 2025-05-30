@@ -17,13 +17,21 @@ class ProductBase(BaseModel):
 
 class ProductCreate(ProductBase):
     owner_id: str
-    images: List[ProductImage]
+    image_urls: List[str] = Field(default_factory=list)
+
+class ProductUpdate(BaseModel):
+    category_name: Optional[str] = None
+    product_name: Optional[str] = None
+    description: Optional[str] = None
+    quantity: Optional[int] = None
+    price: Optional[float] = None
+    image_urls: Optional[List[str]] = Field(None)
 
 class Product(ProductBase):
     product_id: str
     owner_id: str
     post_time: datetime = Field(default_factory=datetime.now)
-    images: List[ProductImage]
+    images: List[ProductImage] = Field(default_factory=list)
 
     class Config:
         orm_mode = True

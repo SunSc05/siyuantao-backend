@@ -1,22 +1,26 @@
 from fastapi import APIRouter, Depends, HTTPException
 from ..services.product_service import ProductService
 from ..dal.product_dal import ProductDAL
-from ..dal.product_image_dal import ProductImageDAL
-from ..dal.user_favorite_dal import UserFavoriteDAL
 from ..schemas.product import ProductCreate, ProductUpdate
-from ..dependencies import get_db, get_current_user, get_current_active_admin_user
+from ..dependencies import get_current_user, get_current_active_admin_user, get_product_service, get_db_connection
+import pyodbc
+from fastapi import status
+from typing import List, Optional
 
 router = APIRouter()
 
 @router.post("/api/v1/products")
-async def create_product(product: ProductCreate, user = Depends(get_current_user), db: databases.Database = Depends(get_db)):
+async def create_product(product: ProductCreate, user = Depends(get_current_user),
+                          product_service: ProductService = Depends(get_product_service),
+                          conn: pyodbc.Connection = Depends(get_db_connection)):
     """
     创建新商品
     
     Args:
         product: 商品创建请求体
         user: 当前认证用户
-        db: 数据库连接
+        product_service: 商品服务依赖
+        conn: 数据库连接
     
     Returns:
         操作结果消息
@@ -24,52 +28,71 @@ async def create_product(product: ProductCreate, user = Depends(get_current_user
     Raises:
         HTTPException: 创建失败时返回400错误
     """
-    product_dal = ProductDAL(db)
-    product_image_dal = ProductImageDAL(db)
-    user_favorite_dal = UserFavoriteDAL(db)
-    product_service = ProductService(product_dal, product_image_dal, user_favorite_dal)
     try:
-        await product_service.create_product(user.id, product.category_name, product.product_name, product.description, product.quantity, product.price, product.image_urls)
+        owner_id = user.get('user_id') or user.get('UserID')
+        if not owner_id:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Could not get user ID")
+
+        await product_service.create_product(conn, owner_id, product.category_name, product.product_name, product.description, product.quantity, product.price, product.image_urls)
         return {"message": "Product created successfully"}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 @router.put("/api/v1/products/{product_id}")
-async def update_product(product_id: int, product: ProductUpdate, user = Depends(get_current_user), db: databases.Database = Depends(get_db)):
+async def update_product(
+    product_id: int,
+    product_update_data: ProductUpdate,
+    current_user = Depends(get_current_user),
+    product_service: ProductService = Depends(get_product_service),
+    conn: pyodbc.Connection = Depends(get_db_connection)
+):
     """
     更新商品信息
     
     Args:
         product_id: 商品ID
-        product: 商品更新请求体
-        user: 当前认证用户
-        db: 数据库连接
+        product_update_data: 商品更新请求体 (ProductUpdate Schema)
+        current_user: 当前认证用户
+        product_service: 商品服务依赖
+        conn: 数据库连接
     
     Returns:
         操作结果消息
     
     Raises:
-        HTTPException: 更新失败时返回400错误
+        HTTPException: 更新失败时返回相应的HTTP错误
     """
-    product_dal = ProductDAL(db)
-    product_image_dal = ProductImageDAL(db)
-    user_favorite_dal = UserFavoriteDAL(db)
-    product_service = ProductService(product_dal, product_image_dal, user_favorite_dal)
     try:
-        await product_service.update_product(product_id, user.id, product.category_name, product.product_name, product.description, product.quantity, product.price, product.image_urls)
+        owner_id = current_user.get('user_id') or current_user.get('UserID')
+        if not owner_id:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Could not get user ID")
+
+        await product_service.update_product(conn, product_id, owner_id, product_update_data)
         return {"message": "Product updated successfully"}
+
+    except NotFoundError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except PermissionError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except DALError as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Database error: {e}")
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Server error: {e}")
 
 @router.delete("/api/v1/products/{product_id}")
-async def delete_product(product_id: int, user = Depends(get_current_user), db: databases.Database = Depends(get_db)):
+async def delete_product(product_id: int, user = Depends(get_current_user),
+                          product_service: ProductService = Depends(get_product_service),
+                          conn: pyodbc.Connection = Depends(get_db_connection)):
     """
     删除商品
     
     Args:
         product_id: 商品ID
         user: 当前认证用户
-        db: 数据库连接
+        product_service: 商品服务依赖
+        conn: 数据库连接
     
     Returns:
         操作结果消息
@@ -77,18 +100,20 @@ async def delete_product(product_id: int, user = Depends(get_current_user), db: 
     Raises:
         HTTPException: 删除失败时返回400错误
     """
-    product_dal = ProductDAL(db)
-    product_image_dal = ProductImageDAL(db)
-    user_favorite_dal = UserFavoriteDAL(db)
-    product_service = ProductService(product_dal, product_image_dal, user_favorite_dal)
     try:
-        await product_service.delete_product(product_id, user.id)
+        owner_id = user.get('user_id') or user.get('UserID')
+        if not owner_id:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Could not get user ID")
+
+        await product_service.delete_product(conn, product_id, owner_id)
         return {"message": "Product deleted successfully"}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 @router.get("/api/v1/products")
-async def get_product_list(category_id: int = None, status: str = None, keyword: str = None, min_price: float = None, max_price: float = None, order_by: str = 'PostTime', page_number: int = 1, page_size: int = 10, db: databases.Database = Depends(get_db)):
+async def get_product_list(category_id: int = None, status: str = None, keyword: str = None, min_price: float = None, max_price: float = None, order_by: str = 'PostTime', page_number: int = 1, page_size: int = 10,
+                            product_service: ProductService = Depends(get_product_service),
+                            conn: pyodbc.Connection = Depends(get_db_connection)):
     """
     获取商品列表，支持多种筛选条件和分页
     
@@ -101,26 +126,26 @@ async def get_product_list(category_id: int = None, status: str = None, keyword:
         order_by: 排序字段
         page_number: 页码
         page_size: 每页数量
-        db: 数据库连接
+        product_service: 商品服务依赖
+        conn: 数据库连接
     
     Returns:
         商品列表
     """
-    product_dal = ProductDAL(db)
-    product_image_dal = ProductImageDAL(db)
-    user_favorite_dal = UserFavoriteDAL(db)
-    product_service = ProductService(product_dal, product_image_dal, user_favorite_dal)
-    products = await product_service.get_product_list(category_id, status, keyword, min_price, max_price, order_by, page_number, page_size)
+    products = await product_service.get_product_list(conn, category_id, status, keyword, min_price, max_price, order_by, page_number, page_size)
     return products
 
 @router.get("/api/v1/products/{product_id}")
-async def get_product_detail(product_id: int, db: databases.Database = Depends(get_db)):
+async def get_product_detail(product_id: int,
+                              product_service: ProductService = Depends(get_product_service),
+                              conn: pyodbc.Connection = Depends(get_db_connection)):
     """
     获取商品详情
     
     Args:
         product_id: 商品ID
-        db: 数据库连接
+        product_service: 商品服务依赖
+        conn: 数据库连接
     
     Returns:
         商品详情
@@ -128,24 +153,23 @@ async def get_product_detail(product_id: int, db: databases.Database = Depends(g
     Raises:
         HTTPException: 商品不存在时返回404错误
     """
-    product_dal = ProductDAL(db)
-    product_image_dal = ProductImageDAL(db)
-    user_favorite_dal = UserFavoriteDAL(db)
-    product_service = ProductService(product_dal, product_image_dal, user_favorite_dal)
-    product = await product_service.get_product_detail(product_id)
+    product = await product_service.get_product_detail(conn, product_id)
     if not product:
-        raise HTTPException(status_code=404, detail="Product not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found")
     return product
 
 @router.put("/api/v1/products/{product_id}/status/activate")
-async def activate_product(product_id: int, admin = Depends(get_current_active_admin_user), db: databases.Database = Depends(get_db)):
+async def activate_product(product_id: int, admin = Depends(get_current_active_admin_user),
+                            product_service: ProductService = Depends(get_product_service),
+                            conn: pyodbc.Connection = Depends(get_db_connection)):
     """
     管理员审核通过商品
     
     Args:
         product_id: 商品ID
         admin: 当前认证的管理员用户
-        db: 数据库连接
+        product_service: 商品服务依赖
+        conn: 数据库连接
     
     Returns:
         操作结果消息
@@ -153,25 +177,28 @@ async def activate_product(product_id: int, admin = Depends(get_current_active_a
     Raises:
         HTTPException: 操作失败时返回400错误
     """
-    product_dal = ProductDAL(db)
-    product_image_dal = ProductImageDAL(db)
-    user_favorite_dal = UserFavoriteDAL(db)
-    product_service = ProductService(product_dal, product_image_dal, user_favorite_dal)
     try:
-        await product_service.activate_product(product_id, admin.id)
+        admin_id = admin.get('user_id') or admin.get('UserID')
+        if not admin_id:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Could not get admin ID")
+
+        await product_service.activate_product(conn, product_id, admin_id)
         return {"message": "Product activated successfully"}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 @router.put("/api/v1/products/{product_id}/status/reject")
-async def reject_product(product_id: int, admin = Depends(get_current_active_admin_user), db: databases.Database = Depends(get_db)):
+async def reject_product(product_id: int, admin = Depends(get_current_active_admin_user),
+                            product_service: ProductService = Depends(get_product_service),
+                            conn: pyodbc.Connection = Depends(get_db_connection)):
     """
     管理员拒绝商品
     
     Args:
         product_id: 商品ID
         admin: 当前认证的管理员用户
-        db: 数据库连接
+        product_service: 商品服务依赖
+        conn: 数据库连接
     
     Returns:
         操作结果消息
@@ -179,25 +206,28 @@ async def reject_product(product_id: int, admin = Depends(get_current_active_adm
     Raises:
         HTTPException: 操作失败时返回400错误
     """
-    product_dal = ProductDAL(db)
-    product_image_dal = ProductImageDAL(db)
-    user_favorite_dal = UserFavoriteDAL(db)
-    product_service = ProductService(product_dal, product_image_dal, user_favorite_dal)
     try:
-        await product_service.reject_product(product_id, admin.id)
+        admin_id = admin.get('user_id') or admin.get('UserID')
+        if not admin_id:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Could not get admin ID")
+
+        await product_service.reject_product(conn, product_id, admin_id)
         return {"message": "Product rejected successfully"}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 @router.put("/api/v1/products/{product_id}/status/withdraw")
-async def withdraw_product(product_id: int, user = Depends(get_current_user), db: databases.Database = Depends(get_db)):
+async def withdraw_product(product_id: int, user = Depends(get_current_user),
+                            product_service: ProductService = Depends(get_product_service),
+                            conn: pyodbc.Connection = Depends(get_db_connection)):
     """
     商品所有者下架商品
     
     Args:
         product_id: 商品ID
         user: 当前认证用户
-        db: 数据库连接
+        product_service: 商品服务依赖
+        conn: 数据库连接
     
     Returns:
         操作结果消息
@@ -205,12 +235,12 @@ async def withdraw_product(product_id: int, user = Depends(get_current_user), db
     Raises:
         HTTPException: 操作失败时返回400错误
     """
-    product_dal = ProductDAL(db)
-    product_image_dal = ProductImageDAL(db)
-    user_favorite_dal = UserFavoriteDAL(db)
-    product_service = ProductService(product_dal, product_image_dal, user_favorite_dal)
     try:
-        await product_service.withdraw_product(product_id, user.id)
+        owner_id = user.get('user_id') or user.get('UserID')
+        if not owner_id:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Could not get user ID")
+
+        await product_service.withdraw_product(conn, product_id, owner_id)
         return {"message": "Product withdrawn successfully"}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -219,7 +249,8 @@ async def withdraw_product(product_id: int, user = Depends(get_current_user), db
 async def batch_activate_products(
     product_ids: List[int], 
     admin = Depends(get_current_active_admin_user), 
-    db: databases.Database = Depends(get_db)
+    product_service: ProductService = Depends(get_product_service),
+    conn: pyodbc.Connection = Depends(get_db_connection)
 ):
     """
     管理员批量审核通过商品
@@ -227,7 +258,8 @@ async def batch_activate_products(
     Args:
         product_ids: 商品ID列表
         admin: 当前认证的管理员用户
-        db: 数据库连接
+        product_service: 商品服务依赖
+        conn: 数据库连接
     
     Returns:
         操作结果消息
@@ -235,13 +267,13 @@ async def batch_activate_products(
     Raises:
         HTTPException: 操作失败时返回400错误
     """
-    product_dal = ProductDAL(db)
-    product_image_dal = ProductImageDAL(db)
-    user_favorite_dal = UserFavoriteDAL(db)
-    product_service = ProductService(product_dal, product_image_dal, user_favorite_dal)
     try:
-        await product_service.batch_activate_products(product_ids, admin.id)
-        return {"message": f"{len(product_ids)} products activated successfully"}
+        admin_id = admin.get('user_id') or admin.get('UserID')
+        if not admin_id:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Could not get admin ID")
+
+        success_count = await product_service.batch_activate_products(conn, product_ids, admin_id)
+        return {"message": f"{success_count} products activated successfully"}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -249,7 +281,8 @@ async def batch_activate_products(
 async def batch_reject_products(
     product_ids: List[int], 
     admin = Depends(get_current_active_admin_user), 
-    db: databases.Database = Depends(get_db)
+    product_service: ProductService = Depends(get_product_service),
+    conn: pyodbc.Connection = Depends(get_db_connection)
 ):
     """
     管理员批量拒绝商品
@@ -257,7 +290,8 @@ async def batch_reject_products(
     Args:
         product_ids: 商品ID列表
         admin: 当前认证的管理员用户
-        db: 数据库连接
+        product_service: 商品服务依赖
+        conn: 数据库连接
     
     Returns:
         操作结果消息
@@ -265,12 +299,12 @@ async def batch_reject_products(
     Raises:
         HTTPException: 操作失败时返回400错误
     """
-    product_dal = ProductDAL(db)
-    product_image_dal = ProductImageDAL(db)
-    user_favorite_dal = UserFavoriteDAL(db)
-    product_service = ProductService(product_dal, product_image_dal, user_favorite_dal)
     try:
-        await product_service.batch_reject_products(product_ids, admin.id)
-        return {"message": f"{len(product_ids)} products rejected successfully"}
+        admin_id = admin.get('user_id') or admin.get('UserID')
+        if not admin_id:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Could not get admin ID")
+
+        success_count = await product_service.batch_reject_products(conn, product_ids, admin_id)
+        return {"message": f"{success_count} products rejected successfully"}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
