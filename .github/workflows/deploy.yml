@@ -33,6 +33,11 @@ jobs:
           echo "Changing to project directory: ${{ secrets.PROJECT_PATH }}"
           cd ${{ secrets.PROJECT_PATH }}
 
+          # --- 配置 Git 以信任主机 --- 
+          # 确保 GitHub 的主机密钥被服务器信任
+          echo "Adding github.com to server's known_hosts..."
+          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null || echo "github.com already in known_hosts or failed to add, continuing..."
+
           # --- 使用 Git 更新代码 ---
           echo "Updating code..."
           # 不需要设置远程URL，因为我们假设SSH代理已配置且远程已是SSH
