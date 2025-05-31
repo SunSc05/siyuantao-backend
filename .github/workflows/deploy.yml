@@ -27,7 +27,7 @@ jobs:
     # 第四步：连接到服务器并执行部署命令
     - name: Deploy to Server
       run: |
-        ssh -o StrictHostKeyChecking=no ${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }} << 'EOF'
+        ssh -o StrictHostKeyChecking=no root@${{ secrets.SSH_HOST }} << 'EOF'
           set -e # 任意命令失败时立即退出
 
           echo "Changing to project directory: ${{ secrets.PROJECT_PATH }}"
@@ -74,11 +74,11 @@ jobs:
           # 目前，我们跳过这一步，假设数据库结构已就绪。
           # 重启 ASGI 应用服务器 (Gunicorn)
           echo "Restarting Gunicorn service 'gunicorn_siyuantao'..."
-          sudo -n systemctl restart gunicorn_siyuantao
+          systemctl restart gunicorn_siyuantao
 
           # 检查服务状态 (可选)
           echo "Checking Gunicorn service status..."
-          sudo systemctl status gunicorn_siyuantao --no-pager || echo "Failed to get Gunicorn status, check manually."
+          systemctl status gunicorn_siyuantao --no-pager || echo "Failed to get Gunicorn status, check manually."
 
           echo "Deployment process completed!"
         EOF
