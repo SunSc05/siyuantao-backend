@@ -9,8 +9,6 @@ class EvaluationCreateSchema(BaseModel):
     对应存储过程：[dbo].[CreateEvaluation]
     """
     order_id: UUID = Field(..., description="订单ID")
-    product_id: UUID = Field(..., description="商品ID")
-    user_id: UUID = Field(..., description="用户ID") # 评价人ID，即买家ID
     rating: int = Field(..., ge=1, le=5, description="评分 (1-5)")
     comment: Optional[str] = Field(None, max_length=500, description="评价内容")
 
@@ -25,8 +23,8 @@ class EvaluationResponseSchema(BaseModel):
     evaluation_id: UUID = Field(..., description="评价ID")
     order_id: UUID = Field(..., description="订单ID")
     product_id: UUID = Field(..., description="商品ID")
-    buyer_id: UUID = Field(..., description="买家ID") # 评价人ID
-    seller_id: UUID = Field(..., description="卖家ID") # 被评价人ID
+    buyer_id: UUID = Field(..., description="评价发起人ID，即买家ID")
+    seller_id: UUID = Field(..., description="评价对象ID，即卖家ID")
     rating: int = Field(..., description="评分")
     comment: Optional[str] = Field(None, description="评价内容")
     created_at: datetime = Field(..., description="评价创建时间")

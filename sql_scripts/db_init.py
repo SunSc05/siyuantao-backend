@@ -13,7 +13,7 @@ import logging
 import argparse
 from datetime import datetime
 import time # Add import for time module
-import uuid
+import uuid # Ensure uuid is directly imported
 
 # 导入 dotenv 来加载 .env 文件
 from dotenv import load_dotenv

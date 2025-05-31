@@ -55,6 +55,12 @@ class PermissionError(Exception):
         self.message = message
         super().__init__(self.message)
 
+class InternalServerError(Exception):
+    """Raised for unexpected internal server errors."""
+    def __init__(self, message="Internal server error"):
+        self.message = message
+        super().__init__(self.message)
+
 # FastAPI 异常处理器 - 确保将 DAL 异常转换为标准 HTTP 响应
 async def not_found_exception_handler(request: Request, exc: NotFoundError):
     return JSONResponse(

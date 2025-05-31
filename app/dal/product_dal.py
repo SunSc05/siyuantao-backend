@@ -1,7 +1,7 @@
 # import databases # Remove this import
 from typing import List, Dict, Optional
 import pyodbc # Import pyodbc for type hinting conn
-from uuid import UUID
+from uuid import UUID # Import UUID
 import logging
 
 from app.exceptions import DALError, NotFoundError, IntegrityError, PermissionError, DatabaseError # Import DatabaseError
@@ -21,14 +21,14 @@ class ProductDAL:
         """
         self._execute_query = execute_query_func
 
-    async def create_product(self, conn: pyodbc.Connection, owner_id: int, category_name: str, product_name: str, 
-                            description: str, quantity: int, price: float) -> int:
+    async def create_product(self, conn: pyodbc.Connection, owner_id: UUID, category_name: str, product_name: str, 
+                            description: str, quantity: int, price: float) -> UUID: # Changed return type to UUID
         """
         创建新商品
         
         Args:
             conn: 数据库连接对象
-            owner_id: 商品所有者ID
+            owner_id: 商品所有者ID (UUID)
             category_name: 商品分类名称
             product_name: 商品名称
             description: 商品描述
@@ -36,14 +36,14 @@ class ProductDAL:
             price: 商品价格
         
         Returns:
-            新商品ID
+            新商品ID (UUID)
         
         Raises:
             DatabaseError: 数据库操作失败时抛出
         """
         sql = "{CALL sp_CreateProduct(?, ?, ?, ?, ?, ?)}"
         params = (
-            owner_id,
+            owner_id, # Passed as UUID
             category_name,
             product_name,
             description,
@@ -56,24 +56,28 @@ class ProductDAL:
         # Assuming the stored procedure returns the new product ID in a column named '新商品ID' or 'NewProductID'
         # Need to check the actual SP definition for the exact column name.
         # Based on 02_product_procedures.sql, it returns '新商品ID'.
-        new_product_id = result.get('NewProductID') if result else None
+        new_product_id_str = result.get('新商品ID') if result else None # Changed key to '新商品ID'
         
-        if not new_product_id:
+        if not new_product_id_str:
             # Handle case where SP executed but did not return the expected ID
-            logger.error(f"DAL: sp_CreateProduct failed to return NewProductID. Result: {result}")
+            logger.error(f"DAL: sp_CreateProduct failed to return 新商品ID. Result: {result}")
             raise DALError("Failed to retrieve new product ID after creation.")
-            
-        return new_product_id # Return the new product ID
+        
+        try:
+            return UUID(new_product_id_str) # Convert string UUID to UUID object
+        except ValueError as e:
+            logger.error(f"DAL: Failed to convert new product ID '{new_product_id_str}' to UUID: {e}")
+            raise DALError("Failed to convert new product ID to UUID.") from e
 
-    async def update_product(self, conn: pyodbc.Connection, product_id: int, owner_id: int, category_name: str, product_name: str, 
+    async def update_product(self, conn: pyodbc.Connection, product_id: UUID, owner_id: UUID, category_name: str, product_name: str, 
                             description: str, quantity: int, price: float) -> None:
         """
         更新商品信息
         
         Args:
             conn: 数据库连接对象
-            product_id: 商品ID
-            owner_id: 商品所有者ID
+            product_id: 商品ID (UUID)
+            owner_id: 商品所有者ID (UUID)
             category_name: 商品分类名称
             product_name: 商品名称
             description: 商品描述
@@ -86,8 +90,8 @@ class ProductDAL:
         """
         sql = "{CALL sp_UpdateProduct(?, ?, ?, ?, ?, ?, ?)}"
         params = (
-            product_id,
-            owner_id,
+            product_id, # Passed as UUID
+            owner_id, # Passed as UUID
             category_name,
             product_name,
             description,
@@ -108,14 +112,14 @@ class ProductDAL:
             logger.error(f"Unexpected Error updating product {product_id}: {e}")
             raise e
 
-    async def delete_product(self, conn: pyodbc.Connection, product_id: int, owner_id: int) -> None:
+    async def delete_product(self, conn: pyodbc.Connection, product_id: UUID, owner_id: UUID) -> None:
         """
         删除商品
         
         Args:
             conn: 数据库连接对象
-            product_id: 商品ID
-            owner_id: 商品所有者ID或管理员ID
+            product_id: 商品ID (UUID)
+            owner_id: 商品所有者ID或管理员ID (UUID)
         
         Raises:
             DatabaseError: 数据库操作失败时抛出
@@ -123,8 +127,8 @@ class ProductDAL:
         """
         sql = "{CALL sp_DeleteProduct(?, ?)}"
         params = (
-            product_id,
-            owner_id
+            product_id, # Passed as UUID
+            owner_id # Passed as UUID
         )
         try:
             rowcount = await self._execute_query(conn, sql, params, fetchone=False, fetchall=False)
@@ -139,14 +143,14 @@ class ProductDAL:
             logger.error(f"Unexpected Error deleting product {product_id}: {e}")
             raise e
 
-    async def activate_product(self, conn: pyodbc.Connection, product_id: int, admin_id: int) -> None:
+    async def activate_product(self, conn: pyodbc.Connection, product_id: UUID, admin_id: UUID) -> None:
         """
         管理员审核通过商品，将商品状态设为Active
         
         Args:
             conn: 数据库连接对象
-            product_id: 商品ID
-            admin_id: 管理员ID
+            product_id: 商品ID (UUID)
+            admin_id: 管理员ID (UUID)
         
         Raises:
             DatabaseError: 数据库操作失败时抛出
@@ -154,8 +158,8 @@ class ProductDAL:
         """
         sql = "{CALL sp_ActivateProduct(?, ?)}"
         params = (
-            product_id,
-            admin_id
+            product_id, # Passed as UUID
+            admin_id # Passed as UUID
         )
         try:
             rowcount = await self._execute_query(conn, sql, params, fetchone=False, fetchall=False)
@@ -172,14 +176,14 @@ class ProductDAL:
             logger.error(f"Unexpected Error activating product {product_id}: {e}")
             raise e
 
-    async def reject_product(self, conn: pyodbc.Connection, product_id: int, admin_id: int, reason: Optional[str] = None) -> None:
+    async def reject_product(self, conn: pyodbc.Connection, product_id: UUID, admin_id: UUID, reason: Optional[str] = None) -> None:
         """
         管理员拒绝商品，将商品状态设为Rejected
         
         Args:
             conn: 数据库连接对象
-            product_id: 商品ID
-            admin_id: 管理员ID
+            product_id: 商品ID (UUID)
+            admin_id: 管理员ID (UUID)
             reason: 拒绝原因，可选
         
         Raises:
@@ -191,8 +195,8 @@ class ProductDAL:
         # Modify query to include reason
         sql = "{CALL sp_RejectProduct(?, ?, ?)}"
         params = (
-            product_id,
-            admin_id,
+            product_id, # Passed as UUID
+            admin_id, # Passed as UUID
             reason
         )
         try:
@@ -210,14 +214,14 @@ class ProductDAL:
             logger.error(f"DAL: Unexpected error rejecting product {product_id}: {e}")
             raise DALError(f"Unexpected error rejecting product {product_id}: {e}") from e
 
-    async def withdraw_product(self, conn: pyodbc.Connection, product_id: int, owner_id: int) -> None:
+    async def withdraw_product(self, conn: pyodbc.Connection, product_id: UUID, owner_id: UUID) -> None:
         """
         商品所有者下架商品，将商品状态设为Withdrawn
         
         Args:
             conn: 数据库连接对象
-            product_id: 商品ID
-            owner_id: 商品所有者ID
+            product_id: 商品ID (UUID)
+            owner_id: 商品所有者ID (UUID)
         
         Raises:
             DatabaseError: 数据库操作失败时抛出
@@ -225,8 +229,8 @@ class ProductDAL:
         """
         sql = "{CALL sp_WithdrawProduct(?, ?)}"
         params = (
-            product_id,
-            owner_id
+            product_id, # Passed as UUID
+            owner_id # Passed as UUID
         )
         try:
             rowcount = await self._execute_query(conn, sql, params, fetchone=False, fetchall=False)
@@ -240,7 +244,7 @@ class ProductDAL:
             logger.error(f"Unexpected Error withdrawing product {product_id}: {e}")
             raise e
 
-    async def get_product_list(self, conn: pyodbc.Connection, category_id: Optional[int] = None, status: Optional[str] = None, 
+    async def get_product_list(self, conn: pyodbc.Connection, category_name: Optional[str] = None, status: Optional[str] = None, 
                               keyword: Optional[str] = None, min_price: Optional[float] = None, 
                               max_price: Optional[float] = None, order_by: str = 'PostTime', 
                               page_number: int = 1, page_size: int = 10) -> List[Dict]:
@@ -249,7 +253,7 @@ class ProductDAL:
         
         Args:
             conn: 数据库连接对象
-            category_id: 商品分类ID (可选)
+            category_name: 商品分类名称 (可选)
             status: 商品状态 (可选)
             keyword: 搜索关键词 (可选)
             min_price: 最低价格 (可选)
@@ -266,7 +270,7 @@ class ProductDAL:
         """
         sql = "{CALL sp_GetProductList(?, ?, ?, ?, ?, ?, ?, ?)}"
         params = (
-            category_id,
+            category_name, # Passed as string
             status,
             keyword,
             min_price,
@@ -285,13 +289,13 @@ class ProductDAL:
             logger.error(f"Unexpected Error getting product list: {e}")
             raise e
 
-    async def get_product_by_id(self, conn: pyodbc.Connection, product_id: int) -> Optional[Dict]:
+    async def get_product_by_id(self, conn: pyodbc.Connection, product_id: UUID) -> Optional[Dict]:
         """
         根据商品ID获取商品详情
         
         Args:
             conn: 数据库连接对象
-            product_id: 商品ID
+            product_id: 商品ID (UUID)
         
         Returns:
             商品详情字典，如果未找到则返回None
@@ -300,7 +304,7 @@ class ProductDAL:
             DatabaseError: 数据库操作失败时抛出
         """
         sql = "{CALL sp_GetProductById(?)}"
-        params = (product_id,)
+        params = (product_id,) # Passed as UUID
         try:
             result = await self._execute_query(conn, sql, params, fetchone=True)
             return result
@@ -311,20 +315,20 @@ class ProductDAL:
             logger.error(f"Unexpected Error getting product by ID {product_id}: {e}")
             raise e
 
-    async def decrease_product_quantity(self, conn: pyodbc.Connection, product_id: int, quantity_to_decrease: int) -> None:
+    async def decrease_product_quantity(self, conn: pyodbc.Connection, product_id: UUID, quantity_to_decrease: int) -> None:
         """
         减少商品库存
         
         Args:
             conn: 数据库连接对象
-            product_id: 商品ID
+            product_id: 商品ID (UUID)
             quantity_to_decrease: 减少的数量
         
         Raises:
             DatabaseError: 数据库操作失败时抛出
         """
         sql = "{CALL sp_DecreaseProductQuantity(?, ?)}"
-        params = (product_id, quantity_to_decrease)
+        params = (product_id, quantity_to_decrease) # Passed as UUID
         try:
             rowcount = await self._execute_query(conn, sql, params, fetchone=False, fetchall=False)
             if rowcount == 0:
@@ -338,20 +342,20 @@ class ProductDAL:
             logger.error(f"Unexpected Error decreasing product quantity for {product_id}: {e}")
             raise e
 
-    async def increase_product_quantity(self, conn: pyodbc.Connection, product_id: int, quantity_to_increase: int) -> None:
+    async def increase_product_quantity(self, conn: pyodbc.Connection, product_id: UUID, quantity_to_increase: int) -> None:
         """
         增加商品库存
         
         Args:
             conn: 数据库连接对象
-            product_id: 商品ID
+            product_id: 商品ID (UUID)
             quantity_to_increase: 增加的数量
         
         Raises:
             DatabaseError: 数据库操作失败时抛出
         """
         sql = "{CALL sp_IncreaseProductQuantity(?, ?)}"
-        params = (product_id, quantity_to_increase)
+        params = (product_id, quantity_to_increase) # Passed as UUID
         try:
             rowcount = await self._execute_query(conn, sql, params, fetchone=False, fetchall=False)
             if rowcount == 0:
@@ -364,14 +368,14 @@ class ProductDAL:
             logger.error(f"Unexpected Error increasing product quantity for {product_id}: {e}")
             raise e
 
-    async def batch_activate_products(self, conn: pyodbc.Connection, product_ids: List[int], admin_id: int) -> int:
+    async def batch_activate_products(self, conn: pyodbc.Connection, product_ids: List[UUID], admin_id: UUID) -> int:
         """
         批量激活商品
         
         Args:
             conn: 数据库连接对象
-            product_ids: 商品ID列表
-            admin_id: 管理员ID
+            product_ids: 商品ID列表 (List[UUID])
+            admin_id: 管理员ID (UUID)
         
         Returns:
             成功激活的商品数量
@@ -380,10 +384,10 @@ class ProductDAL:
             DatabaseError: 数据库操作失败时抛出
             PermissionError: 非管理员尝试操作时抛出
         """
-        # Convert list of integers to a comma-separated string for the stored procedure
-        product_ids_str = ",".join(map(str, product_ids))
+        # Convert list of UUIDs to a comma-separated string for the stored procedure
+        product_ids_str = ",".join(map(str, product_ids)) # Convert UUIDs to strings
         sql = "{CALL sp_BatchActivateProducts(?, ?)}"
-        params = (product_ids_str, admin_id)
+        params = (product_ids_str, admin_id) # admin_id passed as UUID
         try:
             result = await self._execute_query(conn, sql, params, fetchone=True) # Assuming SP returns count
             activated_count = result.get('ActivatedCount', 0) if result else 0 # Check for 'ActivatedCount' key
@@ -396,14 +400,14 @@ class ProductDAL:
             logger.error(f"Unexpected Error batch activating products: {e}")
             raise e
 
-    async def batch_reject_products(self, conn: pyodbc.Connection, product_ids: List[int], admin_id: int, reason: Optional[str] = None) -> int:
+    async def batch_reject_products(self, conn: pyodbc.Connection, product_ids: List[UUID], admin_id: UUID, reason: Optional[str] = None) -> int:
         """
         批量拒绝商品
         
         Args:
             conn: 数据库连接对象
-            product_ids: 商品ID列表
-            admin_id: 管理员ID
+            product_ids: 商品ID列表 (List[UUID])
+            admin_id: 管理员ID (UUID)
             reason: 拒绝原因，可选
         
         Returns:
@@ -413,9 +417,9 @@ class ProductDAL:
             DatabaseError: 数据库操作失败时抛出
             PermissionError: 非管理员尝试操作时抛出
         """
-        product_ids_str = ",".join(map(str, product_ids))
+        product_ids_str = ",".join(map(str, product_ids)) # Convert UUIDs to strings
         sql = "{CALL sp_BatchRejectProducts(?, ?, ?)}"
-        params = (product_ids_str, admin_id, reason)
+        params = (product_ids_str, admin_id, reason) # admin_id passed as UUID
         try:
             result = await self._execute_query(conn, sql, params, fetchone=True) # Assuming SP returns count
             rejected_count = result.get('RejectedCount', 0) if result else 0 # Check for 'RejectedCount' key
@@ -442,13 +446,13 @@ class ProductImageDAL:
         """
         self._execute_query = execute_query_func
 
-    async def add_product_image(self, conn: pyodbc.Connection, product_id: int, image_url: str, sort_order: int) -> None:
+    async def add_product_image(self, conn: pyodbc.Connection, product_id: UUID, image_url: str, sort_order: int) -> None:
         """
         添加商品图片
         
         Args:
             conn: 数据库连接对象
-            product_id: 商品ID
+            product_id: 商品ID (UUID)
             image_url: 图片URL
             sort_order: 排序顺序
         
@@ -456,7 +460,7 @@ class ProductImageDAL:
             DatabaseError: 数据库操作失败时抛出
         """
         sql = "{CALL sp_AddProductImage(?, ?, ?)}"
-        params = (product_id, image_url, sort_order)
+        params = (product_id, image_url, sort_order) # Passed as UUID
         try:
             # Use execute_query for non-fetching operation
             await self._execute_query(conn, sql, params, fetchone=False, fetchall=False)
@@ -468,13 +472,13 @@ class ProductImageDAL:
             logger.error(f"Unexpected Error adding product image for product {product_id}: {e}")
             raise e
 
-    async def get_images_by_product_id(self, conn: pyodbc.Connection, product_id: int) -> List[Dict]:
+    async def get_images_by_product_id(self, conn: pyodbc.Connection, product_id: UUID) -> List[Dict]:
         """
         获取指定商品的所有图片
         
         Args:
             conn: 数据库连接对象
-            product_id: 商品ID
+            product_id: 商品ID (UUID)
         
         Returns:
             图片URL列表
@@ -483,7 +487,7 @@ class ProductImageDAL:
             DatabaseError: 数据库操作失败时抛出
         """
         sql = "{CALL sp_GetProductImagesByProductId(?)}"
-        params = (product_id,)
+        params = (product_id,) # Passed as UUID
         try:
             result = await self._execute_query(conn, sql, params, fetchall=True)
             return result if result is not None else []
@@ -519,19 +523,19 @@ class ProductImageDAL:
             logger.error(f"Unexpected Error deleting product image {image_id}: {e}")
             raise e
 
-    async def delete_product_images_by_product_id(self, conn: pyodbc.Connection, product_id: int) -> None:
+    async def delete_product_images_by_product_id(self, conn: pyodbc.Connection, product_id: UUID) -> None:
         """
         删除指定商品的所有图片
         
         Args:
             conn: 数据库连接对象
-            product_id: 商品ID
+            product_id: 商品ID (UUID)
         
         Raises:
             DatabaseError: 数据库操作失败时抛出
         """
         sql = "{CALL sp_DeleteProductImagesByProductId(?)}"
-        params = (product_id,)
+        params = (product_id,) # Passed as UUID
         try:
             await self._execute_query(conn, sql, params, fetchone=False, fetchall=False)
             logger.info(f"DAL: All images for product {product_id} deleted.")
@@ -556,21 +560,21 @@ class UserFavoriteDAL:
         """
         self._execute_query = execute_query_func
 
-    async def add_user_favorite(self, conn: pyodbc.Connection, user_id: int, product_id: int) -> None:
+    async def add_user_favorite(self, conn: pyodbc.Connection, user_id: UUID, product_id: UUID) -> None:
         """
         添加用户收藏
         
         Args:
             conn: 数据库连接对象
-            user_id: 用户ID
-            product_id: 商品ID
+            user_id: 用户ID (UUID)
+            product_id: 商品ID (UUID)
         
         Raises:
             DatabaseError: 数据库操作失败时抛出
             IntegrityError: 重复收藏时抛出
         """
         sql = "{CALL sp_AddUserFavorite(?, ?)}"
-        params = (user_id, product_id)
+        params = (user_id, product_id) # Passed as UUID
         try:
             await self._execute_query(conn, sql, params, fetchone=False, fetchall=False)
             logger.info(f"DAL: User {user_id} added favorite product {product_id}")
@@ -584,20 +588,20 @@ class UserFavoriteDAL:
             logger.error(f"Unexpected Error adding user favorite for user {user_id}, product {product_id}: {e}")
             raise e
 
-    async def remove_user_favorite(self, conn: pyodbc.Connection, user_id: int, product_id: int) -> None:
+    async def remove_user_favorite(self, conn: pyodbc.Connection, user_id: UUID, product_id: UUID) -> None:
         """
         移除用户收藏
         
         Args:
             conn: 数据库连接对象
-            user_id: 用户ID
-            product_id: 商品ID
+            user_id: 用户ID (UUID)
+            product_id: 商品ID (UUID)
         
         Raises:
             DatabaseError: 数据库操作失败时抛出
         """
         sql = "{CALL sp_RemoveUserFavorite(?, ?)}"
-        params = (user_id, product_id)
+        params = (user_id, product_id) # Passed as UUID
         try:
             rowcount = await self._execute_query(conn, sql, params, fetchone=False, fetchall=False)
             if rowcount == 0:
@@ -611,13 +615,13 @@ class UserFavoriteDAL:
             logger.error(f"Unexpected Error removing user favorite for user {user_id}, product {product_id}: {e}")
             raise e
 
-    async def get_user_favorite_products(self, conn: pyodbc.Connection, user_id: int) -> List[Dict]:
+    async def get_user_favorite_products(self, conn: pyodbc.Connection, user_id: UUID) -> List[Dict]:
         """
         获取用户收藏的商品列表
         
         Args:
             conn: 数据库连接对象
-            user_id: 用户ID
+            user_id: 用户ID (UUID)
         
         Returns:
             收藏商品列表 (List[Dict])
@@ -626,7 +630,7 @@ class UserFavoriteDAL:
             DatabaseError: 数据库操作失败时抛出
         """
         sql = "{CALL sp_GetUserFavoriteProducts(?)}"
-        params = (user_id,)
+        params = (user_id,) # Passed as UUID
         try:
             result = await self._execute_query(conn, sql, params, fetchall=True)
             return result if result is not None else []

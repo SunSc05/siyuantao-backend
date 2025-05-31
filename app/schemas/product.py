@@ -28,8 +28,8 @@ class ProductUpdate(BaseModel):
     image_urls: Optional[List[str]] = Field(None)
 
 class Product(ProductBase):
-    product_id: str
-    owner_id: str
+    product_id: UUID
+    owner_id: UUID
     post_time: datetime = Field(default_factory=datetime.now)
     images: List[ProductImage] = Field(default_factory=list)
 

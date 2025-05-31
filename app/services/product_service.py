@@ -1,7 +1,12 @@
 from typing import List, Dict, Optional
+from uuid import UUID # Correct import for UUID
 from ..schemas.product import ProductUpdate
 from ..dal.product_dal import ProductDAL, ProductImageDAL, UserFavoriteDAL
 import pyodbc
+from app.exceptions import DALError, NotFoundError, IntegrityError, PermissionError, InternalServerError
+import logging # Import logging
+
+logger = logging.getLogger(__name__) # Initialize logger
 
 class ProductService:
     """
@@ -20,7 +25,7 @@ class ProductService:
         self.product_image_dal = product_image_dal
         self.user_favorite_dal = user_favorite_dal
 
-    async def create_product(self, conn: pyodbc.Connection, owner_id: int, category_name: str, product_name: str, 
+    async def create_product(self, conn: pyodbc.Connection, owner_id: UUID, category_name: str, product_name: str, 
                             description: str, quantity: int, price: float, image_urls: List[str]) -> None:
         """
         创建商品及其图片
@@ -55,14 +60,14 @@ class ProductService:
                 await self.product_image_dal.add_product_image(conn, new_product_id, image_url, sort_order)
                 sort_order += 1
 
-    async def update_product(self, conn: pyodbc.Connection, product_id: int, owner_id: int, product_update_data: ProductUpdate) -> None:
+    async def update_product(self, conn: pyodbc.Connection, product_id: UUID, owner_id: UUID, product_update_data: ProductUpdate) -> None:
         """
         更新商品及其图片
         
         Args:
             conn: 数据库连接对象
-            product_id: 商品ID
-            owner_id: 商品所有者ID
+            product_id: 商品ID (UUID)
+            owner_id: 商品所有者ID (UUID)
             product_update_data: 商品更新数据 Pydantic Schema
         
         Raises:
@@ -76,309 +81,325 @@ class ProductService:
             raise ValueError("Product not found")
         
         # 权限检查
-        if str(product.get("OwnerID")) != str(owner_id):
-            raise PermissionError("You are not the owner of this product.")
+        if product.get("发布者用户ID") != owner_id:
+            raise PermissionError("您无权更新此商品")
         
-        # Extract data from the schema, excluding None values
-        update_data = product_update_data.model_dump(exclude_none=True)
-        
-        # Separate image_urls from other update data
-        image_urls = update_data.pop('image_urls', None)
-        
-        # Call DAL to update product basic info (if there is data other than images)
-        if update_data:
-             await self.product_dal.update_product(conn, product_id, owner_id, **update_data)
-        
-        # Handle image updates if image_urls were provided
-        if image_urls is not None:
-             # First, delete existing images for this product
-             await self.product_image_dal.delete_product_images_by_product_id(conn, product_id)
-             
-             # Then add the new images with sort order
-             if image_urls:
-                  sort_order = 0
-                  for image_url in image_urls:
-                      await self.product_image_dal.add_product_image(conn, product_id, image_url, sort_order)
-                      sort_order += 1
+        try:
+            # Only update fields that are provided in product_update_data
+            update_data = product_update_data.model_dump(exclude_unset=True)
 
-    async def delete_product(self, conn: pyodbc.Connection, product_id: int, owner_id: int) -> None:
+            # Retrieve current product details to fill missing fields in update_data
+            current_category_name = product.get("商品类别") if "商品类别" in product else None
+            current_product_name = product.get("商品名称") if "商品名称" in product else ""
+            current_description = product.get("商品描述") if "商品描述" in product else None
+            current_quantity = product.get("库存") if "库存" in product and product["库存"] is not None else 0
+            current_price = product.get("价格") if "价格" in product and product["价格"] is not None else 0.0
+            
+            # Use provided data or fallback to current data
+            category_name = update_data.get("category_name", current_category_name)
+            product_name = update_data.get("product_name", current_product_name)
+            description = update_data.get("description", current_description)
+            quantity = update_data.get("quantity", current_quantity)
+            price = update_data.get("price", current_price)
+
+            await self.product_dal.update_product(conn, product_id, owner_id, 
+                                                category_name, product_name, description, quantity, price)
+            logger.info(f"Product {product_id} updated by owner {owner_id}")
+
+            # Handle image updates if image_urls is provided
+            if product_update_data.image_urls is not None:
+                # First, delete existing images for this product
+                await self.product_image_dal.delete_product_images_by_product_id(conn, product_id)
+                
+                # Then, add new images
+                for i, image_url in enumerate(product_update_data.image_urls):
+                    await self.product_image_dal.add_product_image(conn, product_id, image_url, i)
+                    logger.debug(f"Added image {image_url} for product {product_id} during update")
+        except NotFoundError:
+            raise
+        except PermissionError:
+            raise
+        except DALError as e:
+            logger.error(f"DAL error updating product {product_id}: {e}")
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error updating product {product_id}: {e}", exc_info=True)
+            raise InternalServerError("更新商品失败")
+
+    async def delete_product(self, conn: pyodbc.Connection, product_id: UUID, owner_id: UUID) -> None:
         """
-        删除商品及其关联数据
+        删除商品
         
         Args:
             conn: 数据库连接对象
-            product_id: 商品ID
-            owner_id: 商品所有者ID
+            product_id: 商品ID (UUID)
+            owner_id: 商品所有者ID或管理员ID (UUID)
         
         Raises:
-            PermissionError: 非商品所有者尝试删除时抛出
+            NotFoundError: 商品未找到时抛出
+            PermissionError: 非商品所有者或管理员尝试删除时抛出
             DatabaseError: 数据库操作失败时抛出
         """
-        # 获取商品信息进行权限检查
-        product = await self.product_dal.get_product_by_id(conn, product_id)
-        if not product:
-            raise ValueError("Product not found")
-        
-        # 权限检查
-        if str(product.get("OwnerID")) != str(owner_id):
-            raise PermissionError("You are not the owner of this product.")
-        
-        # 先删除商品图片
-        await self.product_image_dal.delete_product_images_by_product_id(conn, product_id)
-        
-        # 再删除商品
-        await self.product_dal.delete_product(conn, product_id, owner_id)
+        # Check if the product exists and belongs to the owner or if the user is an admin
+        existing_product = await self.product_dal.get_product_by_id(conn, product_id)
+        if not existing_product:
+            raise NotFoundError(f"Product with ID {product_id} not found.")
 
-    async def activate_product(self, conn: pyodbc.Connection, product_id: int, admin_id: int) -> None:
-        """
-        管理员审核通过商品
+        # Check if the user is the owner
+        if existing_product["发布者用户ID"] != owner_id:
+            raise PermissionError("您无权删除此商品")
         
-        Args:
-            conn: 数据库连接对象
-            product_id: 商品ID
-            admin_id: 管理员ID
-        
-        Raises:
-            PermissionError: 非管理员尝试操作时抛出
-            DatabaseError: 数据库操作失败时抛出
-        """
-        # 管理员权限检查
-        if not await self.check_admin_permission(conn, admin_id):
-            raise PermissionError("You are not an admin.")
-        
-        # 激活商品
-        await self.product_dal.activate_product(conn, product_id, admin_id)
+        try:
+            await self.product_dal.delete_product(conn, product_id, owner_id)
+            logger.info(f"Product {product_id} deleted by owner {owner_id}")
 
-    async def reject_product(self, conn: pyodbc.Connection, product_id: int, admin_id: int, reason: Optional[str] = None) -> None:
-        """
-        管理员拒绝商品
-        
-        Args:
-            conn: 数据库连接对象
-            product_id: 商品ID
-            admin_id: 管理员ID
-            reason: 拒绝原因
-        
-        Raises:
-            PermissionError: 非管理员尝试操作时抛出
-            DatabaseError: 数据库操作失败时抛出
-        """
-        # 管理员权限检查
-        # In the DAL, we should trust that the admin_id passed from service is valid
-        # as the router already performed the check. However, for robustness, we can keep this check.
-        if not await self.check_admin_permission(conn, admin_id):
-            raise PermissionError("You are not an admin.")
-        
-        # 拒绝商品
-        await self.product_dal.reject_product(conn, product_id, admin_id, reason) # Pass reason to DAL
+            # Optionally delete associated images
+            await self.product_image_dal.delete_product_images_by_product_id(conn, product_id)
+            logger.debug(f"Deleted images for product {product_id}")
+        except NotFoundError:
+            raise
+        except PermissionError:
+            raise
+        except DALError as e:
+            logger.error(f"DAL error deleting product {product_id}: {e}")
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error deleting product {product_id}: {e}", exc_info=True)
+            raise InternalServerError("删除商品失败")
 
-    async def withdraw_product(self, conn: pyodbc.Connection, product_id: int, owner_id: int) -> None:
+    async def activate_product(self, conn: pyodbc.Connection, product_id: UUID, admin_id: UUID) -> None:
+        # 路由层已经处理了管理员权限验证，服务层不需要重复此检查。
+        # if not await self.check_admin_permission(conn, admin_id): # 传入UUID
+        #     raise PermissionError("无权执行此操作，只有管理员可以激活商品。")
+        
+        try:
+            await self.product_dal.activate_product(conn, product_id, admin_id)
+            logger.info(f"Product {product_id} activated by admin {admin_id}")
+        except NotFoundError:
+            raise
+        except DALError as e:
+            logger.error(f"DAL error activating product {product_id}: {e}")
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error activating product {product_id}: {e}", exc_info=True)
+            raise InternalServerError("激活商品失败") # Modified: Specific error message
+
+    async def reject_product(self, conn: pyodbc.Connection, product_id: UUID, admin_id: UUID, reason: Optional[str] = None) -> None:
+        # 路由层已经处理了管理员权限验证，服务层不需要重复此检查。
+        # if not await self.check_admin_permission(conn, admin_id): # 传入UUID
+        #     raise PermissionError("无权执行此操作，只有管理员可以拒绝商品。")
+
+        try:
+            await self.product_dal.reject_product(conn, product_id, admin_id, reason)
+            logger.info(f"Product {product_id} rejected by admin {admin_id} with reason: {reason}")
+        except NotFoundError:
+            raise
+        except DALError as e:
+            logger.error(f"DAL error rejecting product {product_id}: {e}")
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error rejecting product {product_id}: {e}", exc_info=True)
+            raise InternalServerError("拒绝商品失败") # Modified: Specific error message
+
+    async def withdraw_product(self, conn: pyodbc.Connection, product_id: UUID, owner_id: UUID) -> None:
         """
         商品所有者下架商品
         
         Args:
             conn: 数据库连接对象
-            product_id: 商品ID
-            owner_id: 商品所有者ID
+            product_id: 商品ID (UUID)
+            owner_id: 商品所有者ID (UUID)
         
         Raises:
             PermissionError: 非商品所有者尝试操作时抛出
             DatabaseError: 数据库操作失败时抛出
         """
-        # 获取商品信息进行权限检查
-        product = await self.product_dal.get_product_by_id(conn, product_id)
-        if not product:
-            raise ValueError("Product not found")
+        # Check if the product exists and belongs to the owner before attempting to withdraw
+        existing_product = await self.product_dal.get_product_by_id(conn, product_id)
+        if not existing_product:
+            raise NotFoundError(f"Product with ID {product_id} not found.")
         
-        # 权限检查
-        if str(product.get("OwnerID")) != str(owner_id):
-            raise PermissionError("You are not the owner of this product.")
-        
-        # 下架商品
-        await self.product_dal.withdraw_product(conn, product_id, owner_id)
+        if existing_product["发布者用户ID"] != owner_id:
+            raise PermissionError("您无权下架此商品")
 
-    async def get_product_list(self, conn: pyodbc.Connection, category_id: Optional[int] = None, status: Optional[str] = None, 
+        try:
+            await self.product_dal.withdraw_product(conn, product_id, owner_id)
+            logger.info(f"Product {product_id} withdrawn by owner {owner_id}")
+        except NotFoundError:
+            raise
+        except DALError as e:
+            logger.error(f"DAL error withdrawing product {product_id}: {e}")
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error withdrawing product {product_id}: {e}", exc_info=True)
+            raise InternalServerError("下架商品失败") # Modified: Specific error message
+
+    async def get_product_list(self, conn: pyodbc.Connection, category_name: Optional[str] = None, status: Optional[str] = None, 
                               keyword: Optional[str] = None, min_price: Optional[float] = None, 
                               max_price: Optional[float] = None, order_by: str = 'PostTime', 
                               page_number: int = 1, page_size: int = 10) -> List[Dict]:
         """
-        获取商品列表，包含商品图片信息
+        获取商品列表，支持多种筛选条件和分页
         
         Args:
             conn: 数据库连接对象
-            category_id: 商品分类ID，可选
-            status: 商品状态，可选
-            keyword: 搜索关键词，可选
-            min_price: 最低价格，可选
-            max_price: 最高价格，可选
-            order_by: 排序字段，默认按发布时间
-            page_number: 页码，默认第1页
-            page_size: 每页数量，默认10条
+            category_name: 商品分类名称 (可选)
+            status: 商品状态 (可选)
+            keyword: 搜索关键词 (可选)
+            min_price: 最低价格 (可选)
+            max_price: 最高价格 (可选)
+            order_by: 排序字段 (可选，默认PostTime)
+            page_number: 页码 (默认1)
+            page_size: 每页数量 (默认10)
         
         Returns:
-            商品列表，每个商品包含基本信息和图片列表
+            商品列表 (List[Dict])
         
         Raises:
             DatabaseError: 数据库操作失败时抛出
         """
-        # 获取商品列表
-        products = await self.product_dal.get_product_list(conn,
-            category_id, status, keyword, min_price, max_price, order_by, page_number, page_size
-        )
-        
-        # 为每个商品添加图片信息
-        for product in products:
-            product["images"] = await self.product_image_dal.get_images_by_product_id(conn, product.get("商品ID"))
-        
-        return products
+        try:
+            # category_name is now directly passed to DAL
+            products_data = await self.product_dal.get_product_list(conn, category_name, status, keyword, min_price, max_price, order_by, page_number, page_size)
+            
+            return products_data
+        except DALError as e:
+            logger.error(f"DAL error getting product list: {e}")
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error getting product list: {e}", exc_info=True)
+            raise InternalServerError("获取商品列表失败") # Modified: Specific error message
 
-    async def get_product_detail(self, conn: pyodbc.Connection, product_id: int) -> Optional[Dict]:
+    async def get_product_detail(self, conn: pyodbc.Connection, product_id: UUID) -> Optional[Dict]:
         """
-        获取商品详情，包含商品图片信息
+        根据商品ID获取商品详情
         
         Args:
             conn: 数据库连接对象
-            product_id: 商品ID
+            product_id: 商品ID (UUID)
         
         Returns:
-            商品详情字典，包含基本信息和图片列表，如果不存在则返回None
+            商品详情字典，如果未找到则返回None
         
         Raises:
             DatabaseError: 数据库操作失败时抛出
         """
-        # 获取商品基本信息
-        product = await self.product_dal.get_product_by_id(conn, product_id)
-        
-        if product:
-            # 添加图片信息
-            product["images"] = await self.product_image_dal.get_images_by_product_id(conn, product_id)
-        
-        return product
+        try:
+            product_data = await self.product_dal.get_product_by_id(conn, product_id)
+            
+            if product_data:
+                return product_data
+            return None
+        except DALError as e:
+            logger.error(f"DAL error getting product detail for {product_id}: {e}")
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error getting product detail for {product_id}: {e}", exc_info=True)
+            raise InternalServerError("获取商品详情失败") # Modified: Specific error message
 
-    async def add_favorite(self, conn: pyodbc.Connection, user_id: int, product_id: int) -> None:
+    async def add_favorite(self, conn: pyodbc.Connection, user_id: UUID, product_id: UUID) -> None:
         """
-        用户收藏商品
+        添加用户收藏
         
         Args:
             conn: 数据库连接对象
-            user_id: 用户ID
-            product_id: 商品ID
+            user_id: 用户ID (UUID)
+            product_id: 商品ID (UUID)
         
         Raises:
-            ValueError: 已收藏该商品时抛出
+            IntegrityError: 重复收藏时抛出
             DatabaseError: 数据库操作失败时抛出
         """
         try:
             await self.user_favorite_dal.add_user_favorite(conn, user_id, product_id)
+            logger.info(f"User {user_id} added favorite product {product_id}")
+        except IntegrityError:
+            raise # Re-raise IntegrityError for API layer to handle as 409 Conflict
+        except DALError as e:
+            logger.error(f"DAL error adding favorite for user {user_id}, product {product_id}: {e}")
+            raise
         except Exception as e:
-            # 处理重复收藏异常
-            if isinstance(e, IntegrityError) or ("该商品已被您收藏" in str(e)):
-                raise ValueError("You have already favorited this product.")
-            else:
-                raise e
+            logger.error(f"Unexpected error adding favorite for user {user_id}, product {product_id}: {e}", exc_info=True)
+            raise InternalServerError("添加收藏失败") # Modified: Specific error message
 
-    async def remove_favorite(self, conn: pyodbc.Connection, user_id: int, product_id: int) -> None:
+    async def remove_favorite(self, conn: pyodbc.Connection, user_id: UUID, product_id: UUID) -> None:
         """
-        用户取消收藏商品
+        移除用户收藏
         
         Args:
             conn: 数据库连接对象
-            user_id: 用户ID
-            product_id: 商品ID
+            user_id: 用户ID (UUID)
+            product_id: 商品ID (UUID)
+        
+        Raises:
+            NotFoundError: 收藏不存在时抛出
+            DatabaseError: 数据库操作失败时抛出
+        """
+        try:
+            await self.user_favorite_dal.remove_user_favorite(conn, user_id, product_id)
+            logger.info(f"User {user_id} removed favorite product {product_id}")
+        except NotFoundError:
+            raise # Re-raise NotFoundError for API layer to handle as 404
+        except DALError as e:
+            logger.error(f"DAL error removing favorite for user {user_id}, product {product_id}: {e}")
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error removing favorite for user {user_id}, product {product_id}: {e}", exc_info=True)
+            raise InternalServerError("移除收藏失败") # Modified: Specific error message
+
+    async def get_user_favorites(self, conn: pyodbc.Connection, user_id: UUID) -> List[Dict]:
+        """
+        获取用户收藏的商品列表
+        
+        Args:
+            conn: 数据库连接对象
+            user_id: 用户ID (UUID)
+        
+        Returns:
+            收藏商品列表 (List[Dict])
         
         Raises:
             DatabaseError: 数据库操作失败时抛出
         """
-        await self.user_favorite_dal.remove_user_favorite(conn, user_id, product_id)
+        try:
+            favorites_data = await self.user_favorite_dal.get_user_favorite_products(conn, user_id)
+            
+            return favorites_data
+        except DALError as e:
+            logger.error(f"DAL error getting user favorites for user {user_id}: {e}")
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error getting user favorites for user {user_id}: {e}", exc_info=True)
+            raise InternalServerError("获取用户收藏失败") # Modified: Specific error message
 
-    async def get_user_favorites(self, conn: pyodbc.Connection, user_id: int) -> List[Dict]:
-        """
-        获取用户收藏的商品列表，包含商品详情和图片信息
-        
-        Args:
-            conn: 数据库连接对象
-            user_id: 用户ID
-        
-        Returns:
-            商品列表，每个商品包含基本信息和图片列表
-        
-        Raises:
-            DatabaseError: 数据库操作失败时抛出
-        """
-        # 获取用户收藏的商品ID列表
-        favorite_products = await self.user_favorite_dal.get_user_favorite_products(conn, user_id)
-        
-        # 获取每个商品的详细信息
-        product_details = []
-        for product in favorite_products:
-            product_detail = await self.get_product_detail(conn, product.get("商品ID"))
-            if product_detail:
-                product_details.append(product_detail)
-        
-        return product_details
+    async def batch_activate_products(self, conn: pyodbc.Connection, product_ids: List[UUID], admin_id: UUID) -> int:
+        # 路由层已经处理了管理员权限验证，服务层不需要重复此检查。
+        # if not await self.check_admin_permission(conn, admin_id): # 传入UUID
+        #     raise PermissionError("无权执行此操作，只有管理员可以批量激活商品。")
 
-    async def check_admin_permission(self, conn: pyodbc.Connection, admin_id: int) -> bool:
-        """
-        检查用户是否具有管理员权限
-        
-        Args:
-            conn: 数据库连接对象
-            admin_id: 用户ID
-        
-        Returns:
-            True表示具有管理员权限，False表示没有
-        
-        Note:
-            实际实现中需要根据业务逻辑验证用户权限
-        """
-        # 这里需要实现具体的管理员权限检查逻辑
-        # 示例中假设用户ID为1的是管理员
-        # In a real application, you would query the database to check if the user has admin role/permissions.
-        # For this mock/test environment, we'll assume a specific admin ID or role status.
-        # Assuming admin_id is a UUID or something that can be directly used
-        # For now, let's keep it simple. If admin_id needs to be a UUID in DAL, it should be converted.
-        # Based on previous discussions and tests, `admin_id` here is an int from the `get_current_active_admin_user` dependency.
-        # The `User` table has `UserID` as `int` and `IsStaff` as `bit`.
-        # We should query the `User` table to check `IsStaff` status.
-        query = "SELECT IsStaff FROM [User] WHERE UserID = ?"
-        # Convert admin_id to str for UUID comparison if UserID is UUID, otherwise use as is for int.
-        # From product_routes.py, owner_id is converted to int. So admin_id should be int here too.
-        values = (admin_id,)
-        result = await self._execute_query(conn, query, values, fetchone=True) # Assuming _execute_query is available here
-        is_staff = result.get('IsStaff') if result and isinstance(result, dict) else False
-        return bool(is_staff)
+        try:
+            affected_count = await self.product_dal.batch_activate_products(conn, product_ids, admin_id)
+            logger.info(f"Batch activated {affected_count} products by admin {admin_id}")
+            return affected_count
+        except DALError as e:
+            logger.error(f"DAL error batch activating products: {e}")
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error batch activating products: {e}", exc_info=True)
+            raise InternalServerError("批量激活商品失败") # Modified: Specific error message
 
-    async def batch_activate_products(self, conn: pyodbc.Connection, product_ids: List[int], admin_id: int) -> int:
-        """
-        批量激活商品
-        
-        Args:
-            conn: 数据库连接对象
-            product_ids: 商品ID列表
-            admin_id: 管理员ID
-        Returns:
-            成功激活的商品数量
-        """
-        if not await self.check_admin_permission(conn, admin_id):
-            raise PermissionError("You are not an admin.")
-        
-        success_count = await self.product_dal.batch_activate_products(conn, product_ids, admin_id)
-        return success_count
+    async def batch_reject_products(self, conn: pyodbc.Connection, product_ids: List[UUID], admin_id: UUID, reason: Optional[str] = None) -> int:
+        # 路由层已经处理了管理员权限验证，服务层不需要重复此检查。
+        # if not await self.check_admin_permission(conn, admin_id): # 传入UUID
+        #     raise PermissionError("无权执行此操作，只有管理员可以批量拒绝商品。")
 
-    async def batch_reject_products(self, conn: pyodbc.Connection, product_ids: List[int], admin_id: int, reason: Optional[str] = None) -> int:
-        """
-        批量拒绝商品
-        
-        Args:
-            conn: 数据库连接对象
-            product_ids: 商品ID列表
-            admin_id: 管理员ID
-            reason: 拒绝原因
-        Returns:
-            成功拒绝的商品数量
-        """
-        if not await self.check_admin_permission(conn, admin_id):
-            raise PermissionError("You are not an admin.")
-        
-        success_count = await self.product_dal.batch_reject_products(conn, product_ids, admin_id, reason) # Pass reason to DAL
-        return success_count
+        try:
+            affected_count = await self.product_dal.batch_reject_products(conn, product_ids, admin_id, reason)
+            logger.info(f"Batch rejected {affected_count} products by admin {admin_id}")
+            return affected_count
+        except DALError as e:
+            logger.error(f"DAL error batch rejecting products: {e}")
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error batch rejecting products: {e}", exc_info=True)
+            raise InternalServerError("批量拒绝商品失败") # Modified: Specific error message

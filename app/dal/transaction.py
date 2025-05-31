@@ -29,4 +29,5 @@ async def transaction(conn: pyodbc.Connection):
         # Use asyncio.to_thread for blocking rollback operation
         if conn:
             await asyncio.to_thread(conn.rollback)
+        raise e # Re-raise the exception after rollback
  

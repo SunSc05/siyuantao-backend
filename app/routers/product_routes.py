@@ -11,6 +11,7 @@ from fastapi import UploadFile, File # Import UploadFile and File
 from app.exceptions import NotFoundError, IntegrityError, DALError, ForbiddenError, PermissionError # Import specific exceptions
 import logging # Import logging
 import uuid # Import uuid for UUID conversion
+from uuid import UUID
 
 # Configure logging for this module
 logger = logging.getLogger(__name__)
@@ -37,12 +38,9 @@ async def get_user_favorites(
     Raises:
         HTTPException: 获取失败时返回相应的HTTP错误
     """
+    user_id = user.user_id # Directly access user_id
     try:
-        user_id = user.get('user_id') or user.get('UserID')
-        if not user_id:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="无法获取用户ID")
-        
-        favorites = await product_service.get_user_favorites(conn, int(user_id))
+        favorites = await product_service.get_user_favorites(conn, user_id)
         return favorites
     except NotFoundError as e:
         logger.error(f"User favorites not found for user {user_id}: {e}")
@@ -51,19 +49,23 @@ async def get_user_favorites(
         logger.error(f"Error getting user favorites for user {user_id}: {e}")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except Exception as e:
-        logger.error(f"An unexpected error occurred while getting user favorites for user {user_id}: {e}", exc_info=True)
+        # user_id might be None if the HTTPException is raised before it's assigned
+        # or if user.get() returns None for both keys.
+        # Check if user_id is assigned before logging.
+        log_user_id = user_id if user_id is not None else "N/A"
+        logger.error(f"An unexpected error occurred while getting user favorites for user {log_user_id}: {e}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"服务器内部错误: {e}")
 
 @router.get("/", response_model=List[dict], summary="获取商品列表", tags=["Products"])
 @router.get("", response_model=List[dict], summary="获取商品列表 (无斜杠)", include_in_schema=False)
-async def get_product_list(category_id: int = None, status: str = None, keyword: str = None, min_price: float = None, max_price: float = None, order_by: str = 'PostTime', page_number: int = 1, page_size: int = 10,
+async def get_product_list(category_name: str = None, status: str = None, keyword: str = None, min_price: float = None, max_price: float = None, order_by: str = 'PostTime', page_number: int = 1, page_size: int = 10,
                             product_service: ProductService = Depends(get_product_service),
                             conn: pyodbc.Connection = Depends(get_db_connection)):
     """
     获取商品列表，支持多种筛选条件和分页
     
     Args:
-        category_id: 商品分类ID
+        category_name: 商品分类名称
         status: 商品状态
         keyword: 搜索关键词
         min_price: 最低价格
@@ -81,7 +83,7 @@ async def get_product_list(category_id: int = None, status: str = None, keyword:
         HTTPException: 获取失败时返回相应的HTTP错误
     """
     try:
-        products = await product_service.get_product_list(conn, category_id, status, keyword, min_price, max_price, order_by, page_number, page_size)
+        products = await product_service.get_product_list(conn, category_name, status, keyword, min_price, max_price, order_by, page_number, page_size)
         return products
     except (ValueError, DALError) as e:
         logger.error(f"Error getting product list: {e}")
@@ -109,24 +111,22 @@ async def create_product(product: ProductCreate, user = Depends(get_current_auth
     Raises:
         HTTPException: 创建失败时返回相应的HTTP错误
     """
+    owner_id = user.user_id # Directly access user_id
     try:
-        user_id = user.get('user_id') or user.get('UserID')
-        if not user_id:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="无法获取用户ID")
-        
-        await product_service.create_product(conn, int(user_id), product.category_name, product.product_name, 
+        await product_service.create_product(conn, owner_id, product.category_name, product.product_name, 
                                             product.description, product.quantity, product.price, product.image_urls)
         return {"message": "商品创建成功"}
     except (ValueError, IntegrityError, DALError) as e: # Group ValueError, IntegrityError, DALError for 400
         logger.error(f"Error creating product: {e}")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except Exception as e:
-        logger.error(f"An unexpected error occurred while creating product: {e}", exc_info=True)
+        log_owner_id = owner_id if owner_id is not None else "N/A"
+        logger.error(f"An unexpected error occurred while creating product for owner {log_owner_id}: {e}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"服务器内部错误: {e}")
 
-@router.put("/{product_id:int}")
+@router.put("/{product_id}")
 async def update_product(
-    product_id: int,
+    product_id: UUID,
     product_update_data: ProductUpdate,
     current_user = Depends(get_current_authenticated_user),
     product_service: ProductService = Depends(get_product_service),
@@ -148,12 +148,9 @@ async def update_product(
     Raises:
         HTTPException: 更新失败时返回相应的HTTP错误
     """
+    owner_id = current_user.user_id # Directly access user_id
     try:
-        owner_id = current_user.get('user_id') or current_user.get('UserID')
-        if not owner_id:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="无法获取用户ID")
-        
-        await product_service.update_product(conn, product_id, int(owner_id), product_update_data)
+        await product_service.update_product(conn, product_id, owner_id, product_update_data)
         return {"message": "Product updated successfully"}
     except NotFoundError as e:
         logger.error(f"Error updating product {product_id}: {e}")
@@ -165,11 +162,12 @@ async def update_product(
         logger.error(f"Validation error updating product {product_id}: {e}")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except Exception as e:
-        logger.error(f"An unexpected error occurred while updating product {product_id}: {e}", exc_info=True)
+        log_owner_id = owner_id if owner_id is not None else "N/A"
+        logger.error(f"An unexpected error occurred while updating product {product_id} for owner {log_owner_id}: {e}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"服务器内部错误: {e}")
 
-@router.delete("/{product_id:int}")
-async def delete_product(product_id: int, user = Depends(get_current_authenticated_user),
+@router.delete("/{product_id}")
+async def delete_product(product_id: UUID, user = Depends(get_current_authenticated_user),
                           product_service: ProductService = Depends(get_product_service),
                           conn: pyodbc.Connection = Depends(get_db_connection)):
     """
@@ -187,12 +185,9 @@ async def delete_product(product_id: int, user = Depends(get_current_authenticat
     Raises:
         HTTPException: 删除失败时返回相应的HTTP错误
     """
+    owner_id = user.user_id # Directly access user_id
     try:
-        owner_id = user.get('user_id') or user.get('UserID')
-        if not owner_id:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="无法获取用户ID")
-        
-        await product_service.delete_product(conn, product_id, int(owner_id))
+        await product_service.delete_product(conn, product_id, owner_id)
         return {"message": "商品删除成功"}
     except NotFoundError as e:
         logger.error(f"Error deleting product {product_id}: {e}")
@@ -204,7 +199,8 @@ async def delete_product(product_id: int, user = Depends(get_current_authenticat
         logger.error(f"DAL Error deleting product {product_id}: {e}")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except Exception as e:
-        logger.error(f"An unexpected error occurred while deleting product {product_id}: {e}", exc_info=True)
+        log_owner_id = owner_id if owner_id is not None else "N/A"
+        logger.error(f"An unexpected error occurred while deleting product {product_id} for owner {log_owner_id}: {e}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"服务器内部错误: {e}")
 
 @router.post("/batch/activate")
@@ -229,24 +225,21 @@ async def batch_activate_products(
     Raises:
         HTTPException: 批量激活失败时返回相应的HTTP错误
     """
+    admin_id = admin.user_id # Directly access user_id
     try:
         product_ids_str = request_data.get("product_ids")
         if not product_ids_str or not isinstance(product_ids_str, list):
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="商品ID列表缺失或格式不正确")
         
-        # Convert string UUIDs to integers for the service layer
-        product_ids_int = []
+        # Convert string UUIDs to UUID objects for the service layer
+        product_ids_uuid = []
         for pid_str in product_ids_str:
             try:
-                product_ids_int.append(int(uuid.UUID(pid_str)))
+                product_ids_uuid.append(UUID(pid_str))
             except ValueError:
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"无效的商品ID格式: {pid_str}")
 
-        admin_id = admin.get('user_id') or admin.get('UserID')
-        if not admin_id:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="无法获取管理员ID")
-        
-        affected_count = await product_service.batch_activate_products(conn, product_ids_int, int(admin_id))
+        affected_count = await product_service.batch_activate_products(conn, product_ids_uuid, admin_id)
         return {"message": f"成功激活 {affected_count} 件商品"}
     except NotFoundError as e:
         logger.error(f"Error activating product(s) during batch activation: {e}")
@@ -258,7 +251,8 @@ async def batch_activate_products(
         logger.error(f"Error during batch activation: {e}")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except Exception as e:
-        logger.error(f"An unexpected error occurred while batch activating products: {e}", exc_info=True)
+        log_admin_id = admin_id if admin_id is not None else "N/A"
+        logger.error(f"An unexpected error occurred while batch activating products for admin {log_admin_id}: {e}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"服务器内部错误: {e}")
 
 @router.post("/batch/reject")
@@ -283,25 +277,22 @@ async def batch_reject_products(
     Raises:
         HTTPException: 批量拒绝失败时返回相应的HTTP错误
     """
+    admin_id = admin.user_id # Directly access user_id
     try:
         product_ids_str = request_data.get("product_ids")
         reason = request_data.get("reason") # Extract reason from request_data
         if not product_ids_str or not isinstance(product_ids_str, list):
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="商品ID列表缺失或格式不正确")
         
-        # Convert string UUIDs to integers for the service layer
-        product_ids_int = []
+        # Convert string UUIDs to UUID objects for the service layer
+        product_ids_uuid = []
         for pid_str in product_ids_str:
             try:
-                product_ids_int.append(int(uuid.UUID(pid_str)))
+                product_ids_uuid.append(UUID(pid_str))
             except ValueError:
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"无效的商品ID格式: {pid_str}")
 
-        admin_id = admin.get('user_id') or admin.get('UserID')
-        if not admin_id:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="无法获取管理员ID")
-        
-        affected_count = await product_service.batch_reject_products(conn, product_ids_int, int(admin_id), reason) # Pass reason
+        affected_count = await product_service.batch_reject_products(conn, product_ids_uuid, admin_id, reason) # Pass reason
         return {"message": f"成功拒绝 {affected_count} 件商品"}
     except NotFoundError as e:
         logger.error(f"Product(s) not found during batch rejection: {e}")
@@ -313,11 +304,12 @@ async def batch_reject_products(
         logger.error(f"Error during batch rejection: {e}")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except Exception as e:
-        logger.error(f"An unexpected error occurred while batch rejecting products: {e}", exc_info=True)
+        log_admin_id = admin_id if admin_id is not None else "N/A"
+        logger.error(f"An unexpected error occurred while batch rejecting products for admin {log_admin_id}: {e}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"服务器内部错误: {e}")
 
-@router.post("/{product_id:int}/favorite", status_code=status.HTTP_201_CREATED)
-async def add_favorite(product_id: int, user = Depends(get_current_authenticated_user),
+@router.post("/{product_id}/favorite", status_code=status.HTTP_201_CREATED)
+async def add_favorite(product_id: UUID, user = Depends(get_current_authenticated_user),
                        product_service: ProductService = Depends(get_product_service),
                        conn: pyodbc.Connection = Depends(get_db_connection)):
     """
@@ -335,12 +327,9 @@ async def add_favorite(product_id: int, user = Depends(get_current_authenticated
     Raises:
         HTTPException: 收藏失败时返回相应的HTTP错误
     """
+    user_id = user.user_id # Directly access user_id
     try:
-        user_id = user.get('user_id') or user.get('UserID')
-        if not user_id:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="无法获取用户ID")
-        
-        await product_service.add_favorite(conn, int(user_id), product_id)
+        await product_service.add_favorite(conn, user_id, product_id) # 传入UUID类型
         return {"message": "商品收藏成功"}
     except IntegrityError as e:
         logger.error(f"Error adding favorite for user {user_id}, product {product_id}: {e}")
@@ -352,11 +341,12 @@ async def add_favorite(product_id: int, user = Depends(get_current_authenticated
         logger.error(f"Error adding favorite for user {user_id}, product {product_id}: {e}")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except Exception as e:
-        logger.error(f"An unexpected error occurred while adding favorite for user {user_id}, product {product_id}: {e}", exc_info=True)
+        log_user_id = user_id if user_id is not None else "N/A"
+        logger.error(f"An unexpected error occurred while adding favorite for user {log_user_id}, product {product_id}: {e}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"服务器内部错误: {e}")
 
-@router.delete("/{product_id:int}/favorite", status_code=status.HTTP_200_OK)
-async def remove_favorite(product_id: int, user = Depends(get_current_authenticated_user),
+@router.delete("/{product_id}/favorite", status_code=status.HTTP_200_OK)
+async def remove_favorite(product_id: UUID, user = Depends(get_current_authenticated_user),
                           product_service: ProductService = Depends(get_product_service),
                           conn: pyodbc.Connection = Depends(get_db_connection)):
     """
@@ -374,12 +364,9 @@ async def remove_favorite(product_id: int, user = Depends(get_current_authentica
     Raises:
         HTTPException: 移除失败时返回相应的HTTP错误
     """
+    user_id = user.user_id # Directly access user_id
     try:
-        user_id = user.get('user_id') or user.get('UserID')
-        if not user_id:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="无法获取用户ID")
-        
-        await product_service.remove_favorite(conn, int(user_id), product_id)
+        await product_service.remove_favorite(conn, user_id, product_id) # 传入UUID类型
         return {"message": "商品已成功从收藏列表中移除"}
     except NotFoundError as e:
         logger.error(f"Error removing favorite for user {user_id}, product {product_id}: {e}")
@@ -388,11 +375,12 @@ async def remove_favorite(product_id: int, user = Depends(get_current_authentica
         logger.error(f"Error removing favorite for user {user_id}, product {product_id}: {e}")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except Exception as e:
-        logger.error(f"An unexpected error occurred while removing favorite for user {user_id}, product {product_id}: {e}", exc_info=True)
+        log_user_id = user_id if user_id is not None else "N/A"
+        logger.error(f"An unexpected error occurred while removing favorite for user {log_user_id}, product {product_id}: {e}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"服务器内部错误: {e}")
 
-@router.get("/{product_id:int}")
-async def get_product_detail(product_id: int,
+@router.get("/{product_id}")
+async def get_product_detail(product_id: UUID,
                               product_service: ProductService = Depends(get_product_service),
                               conn: pyodbc.Connection = Depends(get_db_connection)):
     """
@@ -424,8 +412,8 @@ async def get_product_detail(product_id: int,
         logger.error(f"An unexpected error occurred while getting product detail for ID {product_id}: {e}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"服务器内部错误: {e}")
 
-@router.put("/{product_id:int}/status/activate")
-async def activate_product(product_id: int, admin = Depends(get_current_active_admin_user),
+@router.put("/{product_id}/status/activate")
+async def activate_product(product_id: UUID, admin = Depends(get_current_active_admin_user),
                             product_service: ProductService = Depends(get_product_service),
                             conn: pyodbc.Connection = Depends(get_db_connection)):
     """
@@ -443,12 +431,9 @@ async def activate_product(product_id: int, admin = Depends(get_current_active_a
     Raises:
         HTTPException: 激活失败时返回相应的HTTP错误
     """
+    admin_id = admin.user_id # Directly access user_id
     try:
-        admin_id = admin.get('user_id') or admin.get('UserID')
-        if not admin_id:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="无法获取管理员ID")
-        
-        await product_service.activate_product(conn, product_id, int(admin_id))
+        await product_service.activate_product(conn, product_id, admin_id) # 传入UUID类型
         return {"message": "商品已成功激活"}
     except NotFoundError as e:
         logger.error(f"Product with ID {product_id} not found for activation: {e}")
@@ -460,11 +445,12 @@ async def activate_product(product_id: int, admin = Depends(get_current_active_a
         logger.error(f"Error activating product {product_id}: {e}")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except Exception as e:
-        logger.error(f"An unexpected error occurred while activating product: {e}", exc_info=True)
+        log_admin_id = admin_id if admin_id is not None else "N/A"
+        logger.error(f"An unexpected error occurred while activating product for admin {log_admin_id}: {e}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"服务器内部错误: {e}")
 
-@router.put("/{product_id:int}/status/reject")
-async def reject_product(product_id: int, request_data: dict,
+@router.put("/{product_id}/status/reject")
+async def reject_product(product_id: UUID, request_data: dict,
                             admin = Depends(get_current_active_admin_user),
                             product_service: ProductService = Depends(get_product_service),
                             conn: pyodbc.Connection = Depends(get_db_connection)):
@@ -484,16 +470,13 @@ async def reject_product(product_id: int, request_data: dict,
     Raises:
         HTTPException: 拒绝失败时返回相应的HTTP错误
     """
+    admin_id = admin.user_id # Directly access user_id
     try:
         reason = request_data.get("reason")
         if reason is None:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="拒绝原因不可为空")
-
-        admin_id = admin.get('user_id') or admin.get('UserID')
-        if not admin_id:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="无法获取管理员ID")
         
-        await product_service.reject_product(conn, product_id, int(admin_id), reason)
+        await product_service.reject_product(conn, product_id, admin_id, reason)
         return {"message": "商品已成功拒绝"}
     except NotFoundError as e:
         logger.error(f"Product with ID {product_id} not found for rejection: {e}")
@@ -505,11 +488,12 @@ async def reject_product(product_id: int, request_data: dict,
         logger.error(f"Error rejecting product {product_id}: {e}")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except Exception as e:
-        logger.error(f"An unexpected error occurred while rejecting product: {e}", exc_info=True)
+        log_admin_id = admin_id if admin_id is not None else "N/A"
+        logger.error(f"An unexpected error occurred while rejecting product for admin {log_admin_id}: {e}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"服务器内部错误: {e}")
 
-@router.put("/{product_id:int}/status/withdraw")
-async def withdraw_product(product_id: int, user = Depends(get_current_authenticated_user),
+@router.put("/{product_id}/status/withdraw")
+async def withdraw_product(product_id: UUID, user = Depends(get_current_authenticated_user),
                             product_service: ProductService = Depends(get_product_service),
                             conn: pyodbc.Connection = Depends(get_db_connection)):
     """
@@ -527,12 +511,9 @@ async def withdraw_product(product_id: int, user = Depends(get_current_authentic
     Raises:
         HTTPException: 下架失败时返回相应的HTTP错误
     """
+    owner_id = user.user_id # Directly access user_id
     try:
-        owner_id = user.get('user_id') or user.get('UserID')
-        if not owner_id:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="无法获取用户ID")
-        
-        await product_service.withdraw_product(conn, product_id, int(owner_id))
+        await product_service.withdraw_product(conn, product_id, owner_id)
         return {"message": "商品已成功下架"}
     except NotFoundError as e:
         logger.error(f"Product with ID {product_id} not found for withdrawal: {e}")
@@ -544,5 +525,6 @@ async def withdraw_product(product_id: int, user = Depends(get_current_authentic
         logger.error(f"Error withdrawing product {product_id}: {e}")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except Exception as e:
-        logger.error(f"An unexpected error occurred while withdrawing product {product_id}: {e}", exc_info=True)
+        log_owner_id = owner_id if owner_id is not None else "N/A"
+        logger.error(f"An unexpected error occurred while withdrawing product {product_id} for owner {log_owner_id}: {e}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"服务器内部错误: {e}")

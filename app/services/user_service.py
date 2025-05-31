@@ -1,7 +1,7 @@
 # app/services/user_service.py
 import pyodbc
 from uuid import UUID
-from typing import Optional, Callable, Awaitable
+from typing import Optional, Callable, Awaitable, List, Dict
 import logging
 import re # Import regex for email validation
 
@@ -250,412 +250,332 @@ class UserService:
             logger.debug(f"DAL.delete_user returned: {delete_success}")
 
             if not delete_success:
-                logger.warning(f"User not found during deletion for ID: {user_id}")
-                raise NotFoundError(f"User with ID {user_id} not found for deletion.")
+                logger.warning(f"User deletion failed or user not found for ID: {user_id}")
+                # 根据 sp_DeleteUser 的返回码决定抛出哪种异常
+                # -1: 用户未找到
+                # -2: 存在依赖，无法删除
+                # 其他负数: 数据库错误
+                if delete_success == -1: # Assuming -1 means user not found
+                     raise NotFoundError(f"User with ID {user_id} not found for deletion.")
+                elif delete_success == -2: # Assuming -2 means dependencies exist
+                     raise IntegrityError(f"User with ID {user_id} cannot be deleted due to existing active products or orders. Please ensure all related products are sold/withdrawn and orders are completed/cancelled.")
+                else: # Other DAL errors
+                     raise DALError(f"Database error during user deletion for user ID {user_id}.")
 
-            logger.info(f"User deleted successfully with ID: {user_id}")
+            logger.info(f"User deleted successfully: {user_id}")
             return True
-        except (NotFoundError, DALError) as e:
+        except (NotFoundError, IntegrityError, DALError) as e:
             logger.error(f"Error during user deletion for ID {user_id}: {e}")
-            raise e # Re-raise specific exceptions
+            raise e
         except Exception as e:
             logger.error(f"Unexpected error during user deletion for ID {user_id}: {e}")
             raise e
-
+    
     async def toggle_user_staff_status(self, conn: pyodbc.Connection, target_user_id: UUID, super_admin_id: UUID) -> bool:
         """
-        Service layer function for super admin to toggle a user's is_staff status.
-        Ensures the target user is not the super admin themselves.
+        Service layer function for a super admin to toggle a user's staff status.
+        Only a super admin can make another user a staff member or revoke staff status.
         """
-        logger.info(f"Super admin {super_admin_id} attempting to toggle staff status for user ID: {target_user_id}")
+        logger.info(f"Super admin {super_admin_id} attempting to toggle staff status for user {target_user_id}.")
+        try:
+            # 1. Check if the super_admin_id is indeed a super admin
+            super_admin_profile = await self.user_dal.get_user_by_id(conn, super_admin_id)
+            if not super_admin_profile or not super_admin_profile.get('IsSuperAdmin'):
+                logger.warning(f"Unauthorized attempt: User {super_admin_id} is not a super admin.")
+                raise ForbiddenError("只有超级管理员才能更改用户管理员状态。")
 
-        # 1. Fetch the target user to get their current status and check if they are the super admin
-        logger.debug(f"Fetching target user {target_user_id}")
-        target_user = await self.user_dal.get_user_by_id(conn, target_user_id) # Assuming DAL gets IsSuperAdmin
-        logger.debug(f"Target user data: {target_user}")
+            # 2. Get the target user's current status and IsStaff status
+            target_user_profile = await self.user_dal.get_user_by_id(conn, target_user_id)
+            if not target_user_profile:
+                logger.warning(f"Target user {target_user_id} not found for staff status toggle.")
+                raise NotFoundError(f"User with ID {target_user_id} not found.")
 
-        if not target_user:
-            logger.warning(f"Toggle staff failed: Target user ID {target_user_id} not found.")
-            raise NotFoundError(f"User with ID {target_user_id} not found.")
+            current_is_staff = target_user_profile.get('IsStaff', False)
+            new_is_staff_status = not current_is_staff # Toggle the status
 
-        # Prevent super admin from changing their own status
-        # We need to check if the target user is ALSO a super admin.
-        # Assuming DAL fetched IsSuperAdmin and it's available in target_user dict.
-        if target_user.get('IsSuperAdmin', False):
-             logger.warning(f"Toggle staff failed: Cannot change staff status of another super admin (ID: {target_user_id}).")
-             # Decide whether to raise ForbiddenError or a more specific error
-             raise ForbiddenError("无法更改超级管理员的管理员身份")
+            # Prevent a super admin from revoking their own super admin status via this method
+            # This method only toggles IsStaff, not IsSuperAdmin.
+            # A super admin might want to toggle their own IsStaff if they also hold that role.
+            # However, direct super admin role removal should be separate.
+            if target_user_id == super_admin_id and target_user_profile.get('IsSuperAdmin'):
+                logger.warning(f"Super admin {super_admin_id} attempted to toggle their own staff status. Not allowed for super admins via this route.")
+                raise ForbiddenError("超级管理员不能通过此操作修改自己的管理员状态。") # Specific error
 
-        # 2. Determine the new is_staff status
-        # Correctly read the current_is_staff status using the key from the stored procedure
-        current_is_staff = target_user.get('是否管理员', False)
-        new_is_staff = not current_is_staff
-        logger.debug(f"Current IsStaff: {current_is_staff}, New IsStaff: {new_is_staff}")
+            # 3. Call DAL to update the IsStaff status
+            update_success = await self.user_dal.toggle_user_staff_status(conn, target_user_id, new_is_staff_status)
 
-        # 3. Call DAL to update the IsStaff status
-        # We need a new DAL method for this specific update, or modify an existing one.
-        # Since updateUserProfile doesn't include IsStaff, let's add a dedicated DAL method.
-        # For now, let's assume a DAL method like update_user_staff_status exists.
-        # TODO: Implement DAL method update_user_staff_status
+            if not update_success:
+                logger.error(f"Failed to toggle staff status for user {target_user_id} in DAL.")
+                raise DALError(f"数据库操作失败：无法更新用户 {target_user_id} 的管理员状态。")
 
-        logger.debug(f"Calling DAL to update staff status for user ID: {target_user_id} to {new_is_staff}")
-        # Assuming DAL method takes conn, user_id, new_is_staff (boolean), and the admin_id performing the action
-        # The DAL method will need to handle the actual SQL UPDATE statement.
-        update_success = await self.user_dal.update_user_staff_status(conn, target_user_id, new_is_staff, super_admin_id)
-        logger.debug(f"DAL.update_user_staff_status returned: {update_success}")
+            logger.info(f"Super admin {super_admin_id} successfully toggled staff status for user {target_user_id} to {new_is_staff_status}.")
+            return True
 
-        if not update_success:
-             # DAL method should return True on success, False/raise on failure
-             logger.error(f"DAL reported staff status update failed for user ID: {target_user_id}")
-             raise DALError(f"Failed to update staff status in database for user ID: {target_user_id}")
-
-        logger.info(f"Super admin {super_admin_id} successfully toggled staff status for user ID {target_user_id} to {new_is_staff}")
-
-        # TODO: Optionally log the action or send a system notification to the affected user
-
-        return True # Indicate success
+        except (NotFoundError, ForbiddenError, DALError) as e:
+            logger.error(f"Error toggling staff status for user {target_user_id}: {e}")
+            raise e
+        except Exception as e:
+            logger.error(f"Unexpected error toggling staff status for user {target_user_id}: {e}")
+            raise e
 
     async def request_verification_email(self, conn: pyodbc.Connection, email: str, user_id: Optional[UUID] = None) -> dict:
         """
-        请求邮箱验证链接。
-        如果 user_id 为 None，表示是未认证用户通过邮箱请求验证。
-        如果 user_id 存在，表示是已认证用户请求验证，此时可以更新其邮箱地址。
+        请求发送邮箱验证魔术链接。
+        如果用户已登录 (user_id 提供), 则更新该用户的验证令牌。
+        如果用户未登录 (user_id 为 None) 且邮箱已存在, 则更新现有用户的验证令牌。
+        如果用户未登录且邮箱不存在, 则创建一个新用户并发送验证令牌。
         """
-        logger.info(f"Service: Requesting verification link for user {user_id} with email {email}")
+        logger.info(f"Attempting to request verification email for email: {email}, user_id: {user_id}")
 
-        # 1. 检查用户是否存在（如果提供了 user_id）
-        if user_id:
-            user_profile = await self.user_dal.get_user_by_id(conn, user_id)
-            if not user_profile:
-                raise NotFoundError(f"用户ID {user_id} 未找到。")
-            if user_profile.get('Status') == 'Disabled': # Assuming 'Status' field from DAL
-                raise ForbiddenError("您的账户已被禁用，无法请求验证邮件。")
-            
-            # 如果用户提供了邮箱地址且与当前数据库中的邮箱不同，则更新邮箱
-            current_email_in_db = user_profile.get('Email')
-            if current_email_in_db != email:
-                # 检查新邮箱是否已被其他用户使用
-                existing_user_with_email = await self.user_dal.get_user_by_email(conn, email)
-                if existing_user_with_email and existing_user_with_email['user_id'] != user_id:
-                    raise IntegrityError("该邮箱已被其他用户注册。")
-                
-                # 更新用户邮箱
-                await self.user_dal.update_user_profile(conn, user_id, email=email) # Pass email as keyword arg
-                logger.info(f"Service: Updated email for user {user_id} from {current_email_in_db} to {email}")
-            else:
-                logger.debug(f"Service: User {user_id} email is already {email}, no update needed.")
-        else:
-            # 如果未提供 user_id，则检查邮箱是否已注册
-            existing_user_with_email = await self.user_dal.get_user_by_email(conn, email)
-            if existing_user_with_email:
-                # 如果邮箱已注册，并且账户已被禁用，则不允许发送验证邮件
-                if existing_user_with_email.get('Status') == 'Disabled':
-                     raise ForbiddenError("此邮箱关联的账户已被禁用。")
-                # 如果邮箱已注册且未禁用，出于安全考虑，仍然假装发送邮件，但实际不处理
-                # 返回一个通用消息，避免泄露邮箱是否注册的信息
-                logger.warning(f"Service: Request for already registered active email {email} without user_id. Returning generic success.")
-                return {"message": "如果邮箱存在或已注册，验证邮件已发送。请检查您的收件箱。"}
-            
-        # 2. 调用 DAL 层请求魔术链接
-        # DAL should handle token generation, storage, and return a dictionary with token info.
-        # It's important that the DAL explicitly returns a success indicator or raises a specific error.
+        if not re.match(r"[^@]+@bjtu\.edu\.cn$", email):
+            logger.warning(f"Invalid BJTU email format for: {email}")
+            raise ValueError("只允许使用北京交通大学邮箱地址进行验证 (@bjtu.edu.cn)")
+
         try:
-            # Pass user_id (can be None) and email to DAL
-            dal_result = await self.user_dal.request_verification_link(conn, user_id, email)
-            logger.debug(f"Service: DAL request_verification_link result: {dal_result}")
-
-            # The DAL should return a dictionary on success.
-            # We expect 'VerificationToken' and 'ExpiresAt' for the client to use.
-            if not dal_result or 'VerificationToken' not in dal_result:
-                raise DALError("请求验证链接失败：数据库返回无效信息。")
-
-            # In a real application, you'd then use a dedicated email service to send the link.
-            verification_token = dal_result['VerificationToken']
-            expires_at = dal_result['ExpiresAt'] # This will be a datetime object from pyodbc, or string
+            # Call the DAL procedure to request magic link
+            # sp_RequestMagicLink handles finding/creating user and updating token
+            result = await self.user_dal.request_magic_link(conn, email, user_id)
             
-            # Construct the magic link (assuming a frontend endpoint /verify-email?token={token})
-            magic_link = f"{settings.FRONTEND_DOMAIN}/verify-email?token={verification_token}"
+            # result will contain 'VerificationToken', 'UserID', 'IsNewUser'
+            verification_token = result.get('VerificationToken')
+            target_user_id = result.get('UserID')
+            is_new_user = result.get('IsNewUser', False)
+
+            if not verification_token or not target_user_id:
+                logger.error(f"DAL did not return expected verification token or user ID for email: {email}")
+                raise DALError("数据库操作失败：未能获取有效的验证令牌。")
+
+            # Send the email with the magic link
+            magic_link_url = f"{settings.FRONTEND_URL}/verify?token={verification_token}"
+            email_subject = "思源淘学生身份验证邮件"
+            email_body = (
+                f"亲爱的同学！\n\n请点击以下链接验证您的邮箱地址：\n\n"
+                f"{magic_link_url}\n\n"
+                f"此链接将在 {settings.MAGIC_LINK_EXPIRE_MINUTES} 分钟后失效。如果您没有请求此验证，请忽略。\n\n"
+                f"祝您使用愉快！\n思源淘开发团队"
+            )
             
-            # Send the email (mocked for now, or use a real email sending library)
-            # Example using a placeholder email sender function
-            try:
-                # Using a dummy email sending function for now
-                self._send_email(
-                    recipient_email=email,
-                    subject="思源淘账户邮箱验证",
-                    body=f"请点击此链接验证您的邮箱：{magic_link}\n链接将在 {settings.MAGIC_LINK_EXPIRE_MINUTES} 分钟后过期。"
-                )
-                logger.info(f"Service: Verification email sent to {email}")
-            except Exception as e:
-                logger.error(f"Service: Failed to send verification email to {email}: {e}")
-                # You might want to rollback the token creation if email sending fails,
-                # or have a separate mechanism to clean up unused tokens.
-                # For now, we'll re-raise as a DALError (as it's a server-side issue for the user)
-                raise EmailSendingError(f"无法发送验证邮件到 {email}。") from e
+            logger.debug(f"Sending verification email to {email}")
+            await self.email_sender(email, email_subject, email_body)
+            logger.info(f"Verification email sent to {email}")
 
-            return {"message": "验证邮件已发送。请检查您的收件箱。", "token": str(verification_token)} # Return success message and token (for debugging/testing)
+            return {"message": "验证邮件已发送。", "user_id": target_user_id, "is_new_user": is_new_user}
 
-        except (NotFoundError, IntegrityError, ForbiddenError, EmailSendingError, DALError) as e:
-            logger.warning(f"Service: Failed to request verification email for {email}: {e}")
-            raise e # Re-raise specific exceptions from DAL
+        except ValueError as e:
+            logger.warning(f"Value error during email request: {e}")
+            raise e
+        except DALError as e:
+            logger.error(f"Database error during email request for {email}: {e}")
+            raise e
+        except EmailSendingError as e:
+            logger.error(f"Failed to send verification email to {email}: {e}")
+            raise e
         except Exception as e:
-            logger.exception(f"Service: Unexpected error requesting verification email for {email}")
-            raise DALError(f"邮箱验证请求失败：内部处理异常。") from e
+            logger.error(f"Unexpected error during email verification request for {email}: {e}")
+            raise e
 
     async def verify_email(self, conn: pyodbc.Connection, token: UUID) -> dict:
         """
-        Service layer function to verify email using a token.
-        This method is general and used for any magic link verification,
-        including student verification.
+        验证邮箱魔术链接。
         """
         logger.info(f"Attempting to verify email with token: {token}")
         try:
-            # Call DAL to verify email
-            logger.debug(f"Calling DAL.verify_email with token: {token}")
-            result = await self.user_dal.verify_email(conn, token)
-            logger.debug(f"DAL.verify_email returned: {result}")
-
-            # The DAL stored procedure sp_VerifyMagicLink seems to return a dictionary with UserID and IsVerified.
-            # We need to check if IsVerified is True.
-            is_verified = result.get('IsVerified')
+            result = await self.user_dal.verify_magic_link(conn, token)
+            
             user_id = result.get('UserID')
-            message = result.get('Message') # Assuming SP might return messages
+            is_verified = result.get('IsVerified')
 
-            if is_verified is True and user_id:
-                logger.info(f"Email verified successfully with token: {token} for user ID: {user_id}")
-                return {"message": message or "邮箱验证成功！", "IsVerified": True, "UserID": user_id}
-            elif message:
-                 # If DAL returned a message but not successful verification
-                 logger.warning(f"DAL returned unsuccessful verification result for token {token}: {result}")
-                 raise DALError(message) # Raise error with the message from DAL
-            else:
-                 # Unexpected DAL outcome
-                 logger.error(f"DAL.verify_email returned unexpected result for token {token}: {result}")
-                 raise DALError("邮箱验证失败: 数据库处理异常。")
+            if not user_id:
+                logger.warning(f"Verification failed: User ID not found for token: {token}")
+                raise AuthenticationError("魔术链接无效或已过期。")
+
+            logger.info(f"Email verification successful for user ID: {user_id}. IsVerified: {is_verified}")
+            return {"user_id": user_id, "is_verified": is_verified, "message": "邮箱验证成功。"}
 
         except DALError as e:
-            # Catch specific DAL errors (like invalid/expired token, disabled account handled in DAL SP)
-            logger.error(f"Database error during email verification with token {token}: {e}")
-            raise e # Re-raise specific DAL errors
+            logger.error(f"Database error during email verification for token {token}: {e}")
+            raise AuthenticationError(f"邮箱验证失败：{e}") from e # Re-raise as AuthenticationError
         except Exception as e:
-            logger.error(f"Unexpected error during email verification with token {token}: {e}")
-            raise DALError(f"邮箱验证时发生未知错误: {e}") from e
+            logger.error(f"Unexpected error during email verification for token {token}: {e}")
+            raise e
 
     async def get_system_notifications(self, conn: pyodbc.Connection, user_id: UUID) -> list[dict]:
         """
-        Service layer function to get system notifications for a user.
+        获取某个用户的系统通知列表。
         """
         logger.info(f"Attempting to get system notifications for user ID: {user_id}")
         try:
             notifications = await self.user_dal.get_system_notifications_by_user_id(conn, user_id)
-            logger.debug(f"DAL.get_system_notifications_by_user_id returned: {notifications}")
-            # Assuming DAL returns a list of dictionaries
+            logger.debug(f"DAL returned {len(notifications)} notifications for user ID: {user_id}")
+            # DAL already returns dicts with PascalCase, convert to camelCase for API if needed
+            # For now, assuming DAL returns keys as they are defined in SQL SP results
             return notifications
+        except NotFoundError as e:
+            logger.warning(f"No notifications found or user not found for ID: {user_id}")
+            return [] # Return empty list if no notifications or user not found (as per DAL behavior)
         except DALError as e:
-            logger.error(f"Database error getting system notifications for user ID {user_id}: {e}")
-            raise DALError(f"Database error getting system notifications: {e}") from e
+            logger.error(f"Database error getting notifications for user ID {user_id}: {e}")
+            raise DALError(f"获取系统通知失败：{e}") from e
         except Exception as e:
-            logger.error(f"Unexpected error getting system notifications for user ID {user_id}: {e}")
+            logger.error(f"Unexpected error getting notifications for user ID {user_id}: {e}")
             raise e
 
     async def mark_system_notification_as_read(self, conn: pyodbc.Connection, notification_id: UUID, user_id: UUID) -> bool:
         """
-        Service layer function to mark a system notification as read.
+        标记系统通知为已读。
         """
-        logger.info(f"Attempting to mark notification {notification_id} as read for user ID: {user_id}")
+        logger.info(f"Attempting to mark notification {notification_id} as read for user {user_id}")
         try:
             success = await self.user_dal.mark_notification_as_read(conn, notification_id, user_id)
-            logger.debug(f"DAL.mark_notification_as_read returned: {success}")
             if not success:
-                logger.warning(f"Failed to mark notification {notification_id} as read for user ID {user_id}. Notification not found or not owned by user?")
-                # Depending on DAL implementation, this might indicate NotFound or Forbidden
-                # Re-fetching the notification to check ownership could be an option if needed
-                # For now, just return False or raise a specific error if DAL doesn't already.
-                # Assuming DAL returns False if not found or not updated.
-                return False
-            logger.info(f"Notification {notification_id} marked as read for user ID: {user_id}")
+                logger.warning(f"Failed to mark notification {notification_id} as read for user {user_id}.")
+                # DAL might return False if notification not found or not owned by user, need to differentiate
+                # Assuming DAL throws specific NotFoundError or ForbiddenError if applicable
+                raise DALError(f"标记通知 {notification_id} 为已读失败。") # Generic error for now
+            logger.info(f"Notification {notification_id} marked as read for user {user_id}.")
             return True
-        except DALError as e:
-            logger.error(f"Database error marking notification {notification_id} as read for user ID {user_id}: {e}")
-            raise DALError(f"Database error marking notification as read: {e}") from e
+        except (NotFoundError, ForbiddenError, DALError) as e: # Catch specific DAL errors
+            logger.error(f"Error marking notification {notification_id} as read for user {user_id}: {e}")
+            raise e
         except Exception as e:
-            logger.error(f"Unexpected error marking notification {notification_id} as read for user ID {user_id}: {e}")
+            logger.error(f"Unexpected error marking notification {notification_id} as read for user {user_id}: {e}")
             raise e
 
     async def change_user_status(self, conn: pyodbc.Connection, user_id: UUID, new_status: str, admin_id: UUID) -> bool:
         """
-        Service layer function for admin to change user status.
+        Service layer function for an admin to change a user's account status.
         """
         logger.info(f"Admin {admin_id} attempting to change status of user {user_id} to {new_status}")
-        # Optional: Add business logic validation for new_status if needed here
         try:
+            # DAL method handles admin permission check and status update
             success = await self.user_dal.change_user_status(conn, user_id, new_status, admin_id)
-            logger.debug(f"DAL.change_user_status returned: {success}")
             if not success:
-                 logger.warning(f"Failed to change status for user {user_id} by admin {admin_id}. User not found?")
-                 raise NotFoundError(f"User with ID {user_id} not found for status change.")
-            logger.info(f"User {user_id} status changed to {new_status} by admin {admin_id}")
+                logger.warning(f"DAL reported failure changing status for user {user_id} by admin {admin_id}.")
+                raise DALError(f"数据库操作失败：无法更改用户 {user_id} 的状态。")
+            logger.info(f"User {user_id} status changed to {new_status} by admin {admin_id}.")
             return True
-        except (NotFoundError, ForbiddenError) as e:
-            logger.error(f"Error changing status for user {user_id} by admin {admin_id}: {e}")
-            raise e # Re-raise specific errors
-        except DALError as e:
-            logger.error(f"Database error changing status for user {user_id} by admin {admin_id}: {e}")
-            raise DALError(f"Database error changing user status: {e}") from e
-        except Exception as e:
-            logger.error(f"Unexpected error changing status for user {user_id} by admin {admin_id}: {e}")
+        except (ForbiddenError, NotFoundError, DALError) as e:
+            logger.error(f"Error changing user status for {user_id} by admin {admin_id}: {e}")
             raise e
-
+        except Exception as e:
+            logger.error(f"Unexpected error changing user status for {user_id} by admin {admin_id}: {e}")
+            raise e
+    
     async def adjust_user_credit(self, conn: pyodbc.Connection, user_id: UUID, credit_adjustment: int, admin_id: UUID, reason: str) -> bool:
         """
-        Service layer function for admin to adjust user credit.
+        Service layer function for an admin to adjust a user's credit score.
         """
-        logger.info(f"Admin {admin_id} attempting to adjust credit for user {user_id} by {credit_adjustment} with reason: {reason}")
-        # Optional: Add business logic validation for credit_adjustment or reason
+        logger.info(f"Admin {admin_id} attempting to adjust credit for user {user_id} by {credit_adjustment}.")
         try:
+            # DAL method handles admin permission check and credit adjustment
             success = await self.user_dal.adjust_user_credit(conn, user_id, credit_adjustment, admin_id, reason)
-            logger.debug(f"DAL.adjust_user_credit returned: {success}")
             if not success:
-                 logger.warning(f"Failed to adjust credit for user {user_id} by admin {admin_id}. User not found?")
-                 raise NotFoundError(f"User with ID {user_id} not found for credit adjustment.")
-            logger.info(f"User {user_id} credit adjusted by {credit_adjustment} by admin {admin_id}")
+                logger.warning(f"DAL reported failure adjusting credit for user {user_id} by admin {admin_id}.")
+                raise DALError(f"数据库操作失败：无法调整用户 {user_id} 的信用分。")
+            logger.info(f"User {user_id} credit adjusted by {credit_adjustment} by admin {admin_id}.")
             return True
-        except (NotFoundError, ForbiddenError) as e:
-            logger.error(f"Error adjusting credit for user {user_id} by admin {admin_id}: {e}")
-            raise e # Re-raise specific errors
-        except DALError as e:
-            logger.error(f"Database error adjusting credit for user {user_id} by admin {admin_id}: {e}")
-            raise DALError(f"Database error adjusting user credit: {e}") from e
+        except (ForbiddenError, NotFoundError, DALError) as e:
+            logger.error(f"Error adjusting user credit for {user_id} by admin {admin_id}: {e}")
+            raise e
         except Exception as e:
-            logger.error(f"Unexpected error adjusting credit for user {user_id} by admin {admin_id}: {e}")
+            logger.error(f"Unexpected error adjusting user credit for {user_id} by admin {admin_id}: {e}")
             raise e
 
     async def get_all_users(self, conn: pyodbc.Connection, admin_id: UUID) -> list[UserResponseSchema]:
         """
-        Service layer function for admin to get all users.
+        Service layer function for an admin to retrieve all user profiles.
         """
-        logger.info(f"Admin {admin_id} attempting to get all users.")
+        logger.info(f"Admin {admin_id} attempting to retrieve all user profiles.")
         try:
+            # DAL method handles admin permission check and fetching all users
             dal_users = await self.user_dal.get_all_users(conn, admin_id)
-            logger.debug(f"DAL.get_all_users returned {len(dal_users)} users.")
-
-            # Convert DAL user dictionaries to UserResponseSchema
-            users = [self._convert_dal_user_to_schema(user_data) for user_data in dal_users]
-            logger.info(f"Successfully retrieved and converted {len(users)} users for admin {admin_id}.")
-            return users
-        except ForbiddenError as e:
-             logger.error(f"Admin {admin_id} ForbiddenError getting all users: {e}")
-             raise e
-        except DALError as e:
-            logger.error(f"Database error getting all users for admin {admin_id}: {e}")
-            raise DALError(f"Database error getting all users: {e}") from e
+            logger.debug(f"DAL returned {len(dal_users)} users for admin {admin_id}.")
+            
+            # Convert DAL results to UserResponseSchema
+            return [self._convert_dal_user_to_schema(user_data) for user_data in dal_users]
+        except (ForbiddenError, DALError) as e:
+            logger.error(f"Error retrieving all users by admin {admin_id}: {e}")
+            raise e
         except Exception as e:
-            logger.error(f"Unexpected error getting all users for admin {admin_id}: {e}")
+            logger.error(f"Unexpected error retrieving all users by admin {admin_id}: {e}")
             raise e
 
     async def update_user_avatar(self, conn: pyodbc.Connection, user_id: UUID, avatar_url: str) -> UserResponseSchema:
         """
-        Service layer function to update user's avatar URL.
-        
-        Args:
-            conn: Database connection object.
-            user_id: The UUID of the user.
-            avatar_url: The new avatar URL.
-            
-        Returns:
-            The updated user's UserResponseSchema.
-            
-        Raises:
-            NotFoundError: If the user is not found.
-            DALError: If a database error occurs.
+        Service layer function to update a user's avatar URL.
         """
-        logger.info(f"Attempting to update avatar for user ID: {user_id} with URL: {avatar_url}")
+        logger.info(f"Attempting to update avatar for user ID: {user_id}")
+        
+        if not avatar_url:
+            logger.warning(f"No avatar URL provided for user ID: {user_id}")
+            raise ValueError("头像URL不能为空。")
+
         try:
-            # Reuse update_user_profile DAL method which supports avatar_url
+            # Update only the avatar_url field
             updated_dal_user = await self.user_dal.update_user_profile(conn, user_id, avatar_url=avatar_url)
-            logger.debug(f"DAL.update_user_profile returned: {updated_dal_user}")
-            
+
             if not updated_dal_user:
-                # This should be caught by NotFoundError from DAL, but as a safeguard
-                 logger.warning(f"User not found during avatar update for ID: {user_id}")
-                 raise NotFoundError(f"User with ID {user_id} not found for avatar update.")
+                logger.warning(f"User not found during avatar update for ID: {user_id}")
+                raise NotFoundError(f"User with ID {user_id} not found for avatar update.")
             
-            logger.debug(f"Converting updated DAL user data to schema for user ID: {user_id}")
+            logger.info(f"Avatar updated successfully for user ID: {user_id}.")
             return self._convert_dal_user_to_schema(updated_dal_user)
-            
-        except NotFoundError as e:
-             logger.error(f"NotFoundError during avatar update for user ID {user_id}: {e}")
-             raise e # Re-raise NotFoundError
-        except DALError as e:
-             logger.error(f"Database error during avatar update for user ID {user_id}: {e}")
-             raise DALError(f"Database error during avatar update: {e}") from e
+
+        except (NotFoundError, DALError) as e:
+            logger.error(f"Error updating avatar for user ID {user_id}: {e}")
+            raise e
         except Exception as e:
-             logger.error(f"Unexpected error during avatar update for user ID {user_id}: {e}")
-             raise e
+            logger.error(f"Unexpected error updating avatar for user ID {user_id}: {e}")
+            raise e
 
     def _convert_dal_user_to_schema(self, dal_user_data: dict) -> UserResponseSchema:
         """
-        Helper to convert a dictionary row from DAL into a UserResponseSchema.
-        Handles potential None values and type conversions.
+        Converts a dictionary from DAL (e.g., SQL row) to UserResponseSchema.
+        Handles key mapping from PascalCase (SQL) to snake_case (Pydantic/Python) and type conversions.
         """
         if not dal_user_data:
-            return None # Return None if input is None or empty
+            return None # Or raise ValueError if an empty dict is not expected
 
-        # Mapping dictionary from potential DAL keys (including Chinese from SP) to schema keys
-        # Using keys observed in the error log: '用户ID', '用户名', '账户状态', '信用分',
-        # '是否管理员', '是否超级管理员', '是否已认证', '专业', '邮箱', '头像URL',
-        # '个人简介', '手机号码', '注册时间'
-        key_mapping = {
-            '用户ID': 'user_id',
-            '用户名': 'username',
-            '邮箱': 'email',
-            '账户状态': 'status',
-            '信用分': 'credit',
-            '是否管理员': 'is_staff',
-            '是否超级管理员': 'is_super_admin',
-            '是否已认证': 'is_verified',
-            '专业': 'major',
-            '头像URL': 'avatar_url',
-            '个人简介': 'bio',
-            '手机号码': 'phone_number',
-            '注册时间': 'join_time',
-            'LastLoginTime': 'last_login_time', # Keep this mapping in case it's used elsewhere
-            # Add any other potential DAL keys and their schema mapping here
+        # Map DAL keys (PascalCase from SQL SPs) to schema keys (snake_case)
+        # Ensure UUIDs and datetimes are correctly parsed if they come as strings
+        # Pydantic's from_attributes should handle most of this if DAL returns correct types,
+        # but explicit conversion ensures robustness.
+        
+        # Manually construct dict for UserResponseSchema, ensuring all fields are present
+        # and types are correct.
+        converted_data = {
+            "user_id": dal_user_data.get('UserID'),
+            "username": dal_user_data.get('UserName'),
+            "email": dal_user_data.get('Email'),
+            "status": dal_user_data.get('Status'),
+            "credit": dal_user_data.get('Credit'),
+            "is_staff": dal_user_data.get('IsStaff') == 1, # BIT to bool
+            "is_super_admin": dal_user_data.get('IsSuperAdmin') == 1, # BIT to bool
+            "is_verified": dal_user_data.get('IsVerified') == 1, # BIT to bool
+            "major": dal_user_data.get('Major'),
+            "avatar_url": dal_user_data.get('AvatarUrl'),
+            "bio": dal_user_data.get('Bio'),
+            "phone_number": dal_user_data.get('PhoneNumber'),
+            "join_time": dal_user_data.get('JoinTime') # datetime object expected
         }
 
-        schema_data = {}
-        for dal_key, schema_key in key_mapping.items():
-            # Get value from dal_user_data using .get() for safety
-            value = dal_user_data.get(dal_key)
-
-            # Handle specific type conversions if necessary
-            if schema_key in ['is_staff', 'is_super_admin', 'is_verified'] and value is not None:
-                 # Ensure boolean values are correctly interpreted (SQL Server BIT -> Python bool)
-                schema_data[schema_key] = bool(value)
-            elif schema_key == 'user_id' and value is not None:
-                 # Ensure UUID is treated correctly (should ideally be a UUID object or string)
-                 # Pydantic can handle UUID strings directly
-                 schema_data[schema_key] = str(value) if not isinstance(value, str) else value
-            elif schema_key in ['join_time', 'last_login_time'] and value is not None:
-                 # Ensure datetime is treated correctly
-                 # Pydantic can handle datetime objects directly. If it's a string,
-                 # Pydantic will attempt to parse it, but passing datetime objects is safer.
-                 # Assuming the DAL returns datetime objects directly or ISO 8601 strings.
-                 # If not, specific parsing might be needed here.
-                 schema_data[schema_key] = value
-            # Add other specific type conversions if required for other fields
-
-            else:
-                schema_data[schema_key] = value # For strings, ints, floats, None, etc.
-
-        # Create and return the Pydantic schema instance
+        # Validate with Pydantic schema to ensure correctness
         try:
-            return UserResponseSchema(**schema_data)
+            return UserResponseSchema(**converted_data)
         except Exception as e:
-            logger.error(f"Error converting DAL user data to schema: {e}", exc_info=True)
-            logger.debug(f"DAL data: {dal_user_data}")
-            logger.debug(f"Schema data before validation: {schema_data}")
-            # Re-raise the exception after logging
-            raise # Re-raise the exception after logging
+            logger.error(f"Error converting DAL user data to UserResponseSchema: {e}")
+            logger.debug(f"DAL Data: {dal_user_data}")
+            logger.debug(f"Converted Data: {converted_data}")
+            raise ValueError(f"Failed to convert user data to response schema: {e}") from e
+
+    async def _send_email(self, to_email: str, subject: str, body: str):
+        """Default email sender function, primarily for internal use if no external sender is provided."""
+        logger.info(f"Default email sender: Sending email to {to_email} with subject '{subject}'")
+        try:
+            await send_student_verification_email(to_email, subject, body)
+            logger.info(f"Default email sender: Email sent successfully to {to_email}")
+        except Exception as e:
+            logger.error(f"Default email sender: Failed to send email to {to_email}: {e}")
+            raise EmailSendingError(f"Failed to send email to {to_email}") from e
 
 # TODO: Add service functions for admin operations (get all users, disable/enable user etc.)

@@ -29,8 +29,6 @@ def create_dummy_order_response_schema(status_val: str, order_id: uuid4 = None, 
         buyer_id=uuid4(),
         product_id=uuid4(),
         quantity=1,
-        shipping_address="123 Test St",
-        contact_phone="555-1234",
         total_price=10.0,
         status=status_val,
         created_at=datetime.now(timezone.utc).replace(microsecond=0),
@@ -50,7 +48,7 @@ def test_create_order_success(client: TestClient, mock_order_service: AsyncMock,
     'client' fixture 会自动处理认证，模拟一个普通用户已登录。
     'mock_order_service' fixture 提供了 Service 层的 Mock。
     """
-    order_data = OrderCreateSchema(product_id=uuid4(), quantity=1, shipping_address="123 Main St", contact_phone="555-1234", total_price=100.0)
+    order_data = OrderCreateSchema(product_id=uuid4(), quantity=1, total_price=100.0)
     # mock_buyer_id is implicitly handled by the client fixture's get_current_user override
 
     expected_created_order_schema = OrderResponseSchema(
@@ -58,8 +56,6 @@ def test_create_order_success(client: TestClient, mock_order_service: AsyncMock,
         buyer_id=client.test_user_id,
         product_id=order_data.product_id,
         quantity=order_data.quantity,
-        shipping_address=order_data.shipping_address,
-        contact_phone=order_data.contact_phone,
         total_price=order_data.total_price,
         status="Pending",
         created_at=datetime.now(timezone.utc).replace(microsecond=0),
@@ -94,7 +90,7 @@ def test_create_order_value_error(client: TestClient, mock_order_service: AsyncM
     mock_order_service.create_order.side_effect = ValueError("订单数量必须大于0")
 
     # OrderCreateSchema 应该有 quantity > 0 的验证
-    order_data = OrderCreateSchema(product_id=uuid4(), quantity=1, shipping_address="123 Main St", contact_phone="555-1234", total_price=100.0)
+    order_data = OrderCreateSchema(product_id=uuid4(), quantity=1, total_price=100.0)
 
     response = client.post(
         "/api/v1/orders/",
@@ -116,7 +112,7 @@ def test_create_order_integrity_error(client: TestClient, mock_order_service: As
     """
     测试Service层抛出IntegrityError时，Router是否正确处理（例如，商品库存不足）。
     """
-    order_data = OrderCreateSchema(product_id=uuid4(), quantity=1, shipping_address="123 Main St", contact_phone="555-1234", total_price=100.0)
+    order_data = OrderCreateSchema(product_id=uuid4(), quantity=1, total_price=100.0)
     mock_order_service.create_order.side_effect = IntegrityError("商品库存不足")
 
     response = client.post("/api/v1/orders/", json=order_data.model_dump(mode="json"), headers={
@@ -135,7 +131,7 @@ def test_create_order_not_found(client: TestClient, mock_order_service: AsyncMoc
     """
     测试Service层抛出NotFoundError时，Router是否正确处理（例如，商品不存在）。
     """
-    order_data = OrderCreateSchema(product_id=uuid4(), quantity=1, shipping_address="123 Main St", contact_phone="555-1234", total_price=100.0)
+    order_data = OrderCreateSchema(product_id=uuid4(), quantity=1, total_price=100.0)
     mock_order_service.create_order.side_effect = NotFoundError("商品不存在")
 
     response = client.post("/api/v1/orders/", json=order_data.model_dump(mode="json"), headers={
@@ -168,8 +164,6 @@ def test_get_order_by_id_success(client: TestClient, mock_order_service: AsyncMo
         updated_at=datetime.now(timezone.utc).replace(microsecond=0),
         seller_id=uuid4(),
         trade_id=None,
-        shipping_address="456 Oak Ave, Otherville, USA",
-        contact_phone="555-5678",
         complete_time=None,
         cancel_time=None,
         cancel_reason=None
@@ -928,8 +922,6 @@ def test_get_my_orders_success_with_orders(client: TestClient, mock_order_servic
             buyer_id=client.test_user_id,
             product_id=uuid4(),
             quantity=1,
-            shipping_address="Addr1",
-            contact_phone="Phone1",
             total_price=100.0,
             status="Pending",
             created_at=datetime.now(timezone.utc).replace(microsecond=0),
@@ -945,8 +937,6 @@ def test_get_my_orders_success_with_orders(client: TestClient, mock_order_servic
             buyer_id=client.test_user_id,
             product_id=uuid4(),
             quantity=2,
-            shipping_address="Addr2",
-            contact_phone="Phone2",
             total_price=200.0,
             status="Completed",
             created_at=datetime.now(timezone.utc).replace(microsecond=0),

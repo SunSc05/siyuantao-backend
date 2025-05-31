@@ -16,8 +16,6 @@ class OrderCreateSchema(BaseModel):
     """
     product_id: UUID = Field(..., description="ID of the product being ordered")
     quantity: int = Field(..., gt=0, description="Quantity of the product")
-    shipping_address: str = Field(..., max_length=255, description="Shipping address for the order")
-    contact_phone: str = Field(..., max_length=20, description="Contact phone number for the order")
     total_price: float = Field(..., gt=0, description="Total price of the order") # 添加 total_price 字段
 
     class Config:
@@ -33,8 +31,6 @@ class OrderResponseSchema(BaseModel):
     buyer_id: UUID = Field(..., description="ID of the buyer")
     product_id: UUID = Field(..., description="ID of the product ordered")
     quantity: int = Field(..., description="Quantity of the product")
-    shipping_address: str = Field(..., max_length=255, description="Shipping address for the order")
-    contact_phone: str = Field(..., max_length=20, description="Contact phone number for the order")
     total_price: float = Field(..., description="Total price of the order") # 使用 float 对应 DECIMAL(10, 2)
     status: str = Field(..., description="Current status of the order")
     created_at: datetime = Field(..., description="Timestamp when the order was created")

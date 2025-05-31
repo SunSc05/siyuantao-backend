@@ -2,10 +2,10 @@ import pytest
 from fastapi import status, HTTPException
 from fastapi.testclient import TestClient
 from datetime import datetime, timedelta
-from uuid import uuid4, uuid5
+from uuid import uuid4, uuid5, UUID
 from app.main import app
 from app.services.product_service import ProductService
-from app.schemas.product import ProductCreate, ProductUpdate
+from app.schemas.product import ProductCreate, ProductUpdate, Product
 from unittest.mock import AsyncMock, MagicMock, ANY
 from fastapi import Depends
 from app.dal.connection import get_db_connection
@@ -19,85 +19,184 @@ from app.schemas.user_schemas import UserResponseSchema
 import uuid
 from app.exceptions import NotFoundError, IntegrityError, DALError, PermissionError # Import specific exceptions
 
-# Define comprehensive mock product data for various filter, pagination, and sorting scenarios (Moved to top level)
+# Mock data for products
 mock_products_all = [
     {
-        "商品ID": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11", "商品名称": "Sony WH-1000XM4", "商品描述": "Noise-cancelling headphones", "库存": 15, "价格": 1999.00, "发布时间": "2023-01-05T10:00:00.000000", "商品状态": "Active", "发布者用户名": "seller1", "商品类别": "Electronics", "主图URL": "/uploads/sony.jpg", "images": []
+        "商品ID": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
+        "商品名称": "测试手机",
+        "商品描述": "一个很棒的测试手机",
+        "库存": 50,
+        "价格": 5999.0,
+        "发布时间": "2023-01-01T10:00:00.000000",
+        "商品状态": "Active",
+        "发布者用户名": "user1",
+        "商品类别": "Electronics",
+        "主图URL": "http://example.com/test_phone.jpg",
+        "images": [
+            {"image_url": "http://example.com/test_phone_1.jpg", "sort_order": 0, "upload_time": datetime.now().isoformat()},
+            {"image_url": "http://example.com/test_phone_2.jpg", "sort_order": 1, "upload_time": datetime.now().isoformat()}
+        ]
     },
     {
-        "商品ID": "b1fcc1a8-2b8e-4a7b-9c7a-5b1b1a1a1a1b", "商品名称": "Samsung Galaxy S21", "商品描述": "Android smartphone", "库存": 20, "价格": 5999.00, "发布时间": "2023-01-01T10:00:00.000000", "商品状态": "Active", "发布者用户名": "seller2", "商品类别": "Electronics", "主图URL": "/uploads/galaxy.jpg", "images": []
+        "商品ID": "b0eebc99-9c0b-4ef8-bb6d-6bb9bd380a12",
+        "商品名称": "旧笔记本",
+        "商品描述": "一台二手的旧笔记本，性能良好。",
+        "库存": 5,
+        "价格": 2500.0,
+        "发布时间": "2023-01-02T10:00:00.000000",
+        "商品状态": "PendingReview",
+        "发布者用户名": "user2",
+        "商品类别": "Electronics",
+        "主图URL": "http://example.com/old_laptop.jpg",
+        "images": []
     },
     {
-        "商品ID": "c2ddee3a-3c9f-5b8c-ad8b-6c2c2b2b2b2c", "商品名称": "Logitech MX Master 3", "商品描述": "Advanced wireless mouse", "库存": 25, "价格": 599.00, "发布时间": "2023-01-07T10:00:00.000000", "商品状态": "Active", "发布者用户名": "seller1", "商品类别": "Electronics", "主图URL": "/uploads/logitech.jpg", "images": []
+        "商品ID": "c0eebc99-9c0b-4ef8-bb6d-6bb9bd380a13",
+        "商品名称": "机械键盘",
+        "商品描述": "手感极佳的机械键盘。",
+        "库存": 20,
+        "价格": 450.0,
+        "发布时间": "2023-01-03T10:00:00.000000",
+        "商品状态": "Active",
+        "发布者用户名": "user1",
+        "商品类别": "Accessories",
+        "主图URL": "http://example.com/keyboard.jpg",
+        "images": []
     },
     {
-        "商品ID": "d3feef4b-4da0-6c9d-be9c-7d3d3c3c3c3d", "商品名称": "The Great Gatsby", "商品描述": "Classic novel by F. Scott Fitzgerald", "库存": 30, "价格": 68.00, "发布时间": "2023-01-09T10:00:00.000000", "商品状态": "Active", "发布者用户名": "seller3", "商品类别": "Books", "主图URL": "/uploads/gatsby.jpg", "images": []
+        "商品ID": "d0eebc99-9c0b-4ef8-bb6d-6bb9bd380a14",
+        "商品名称": "智能手表",
+        "商品描述": "最新款智能手表，功能齐全。",
+        "库存": 15,
+        "价格": 1200.0,
+        "发布时间": "2023-01-04T10:00:00.000000",
+        "商品状态": "Active",
+        "发布者用户名": "user3",
+        "商品类别": "Wearables",
+        "主图URL": "http://example.com/smartwatch.jpg",
+        "images": []
     },
     {
-        "商品ID": "e4gff5c5-5eb1-7dae-cfaf-8e4e4d4d4d4e", "商品名称": "Sold Product 1", "商品描述": "", "库存": 0, "价格": 120.00, "发布时间": "2023-01-03T10:00:00.000000", "商品状态": "Sold", "发布者用户名": "seller4", "商品类别": "Home", "主图URL": "", "images": []
-    },
-    {
-        "商品ID": "f5hgg6d6-6fc2-8feb-e0b0-9f5f5e5e5e5f", "商品名称": "Pending Product 1", "商品描述": "", "库存": 5, "价格": 88.00, "发布时间": "2023-01-06T10:00:00.000000", "商品状态": "PendingReview", "发布者用户名": "seller5", "商品类别": "Sports", "主图URL": "", "images": []
+        "商品ID": "e0eebc99-9c0b-4ef8-bb6d-6bb9bd380a15",
+        "商品名称": "复古相机",
+        "商品描述": "一台保存完好的复古胶片相机。",
+        "库存": 2,
+        "价格": 800.0,
+        "发布时间": "2023-01-05T10:00:00.000000",
+        "商品状态": "Rejected",
+        "发布者用户名": "user4",
+        "商品类别": "Photography",
+        "主图URL": "http://example.com/vintage_camera.jpg",
+        "images": []
     }
 ]
 
-# --- Mock Dependencies ---
+# Helper function to create mock ProductResponseSchema objects
+def create_mock_product_response_schema(product_id: UUID, name: str, owner_id: UUID) -> Product:
+    return Product(
+        product_id=product_id,
+        name=name,
+        description="A test product description",
+        price=100.0,
+        quantity=5,
+        status="Active",
+        owner_id=owner_id,
+        category_name="TestCategory",
+        post_time=datetime.now(),
+        images=[]
+    )
+
 @pytest.fixture(scope="function")
 def mock_product_service(mocker):
-    """Mock the ProductService dependency."""
-    mock_service = AsyncMock(spec=ProductService)
-    # No need to patch dependency here, will do in client fixture
-    return mock_service
+    return mocker.AsyncMock(spec=ProductService)
 
 @pytest.fixture(scope="function")
 def mock_db_connection(mocker):
-    """Mock the database connection dependency."""
-    mock_conn = MagicMock()
-    return mock_conn
+    # Mock the database connection object
+    return MagicMock()
 
-# --- Mock Authentication Dependencies ---
+# Define consistent UUIDs for testing
+test_user_uuid = UUID("00000000-0000-0000-0000-000000000001")
+test_admin_uuid = UUID("00000000-0000-0000-0000-000000000002")
+test_authenticated_user_uuid = UUID("00000000-0000-0000-0000-000000000003")
+
+# Mock dependencies for authentication
 async def mock_get_current_user_override():
-    # Return a dict that matches the expected payload structure for a regular user
-    # Use a consistent, predictable integer ID for testing
-    return {"user_id": 101, "UserID": 101, "username": "testuser", "is_staff": False, "is_verified": True}
+    # Return a UserResponseSchema instance for a regular user
+    return UserResponseSchema(
+        user_id=test_user_uuid,
+        username="testuser",
+        email="test@example.com",
+        status="Active",
+        credit=100,
+        is_staff=False,
+        is_super_admin=False,
+        is_verified=True,
+        major="Computer Science",
+        avatar_url=None,
+        bio="Test bio",
+        phone_number="1234567890",
+        join_time=datetime.now()
+    )
 
 async def mock_get_current_active_admin_user_override():
-    # Return a dict that matches the expected payload structure for an admin user
-    # Use a consistent, predictable integer ID for testing
-    return {"user_id": 201, "UserID": 201, "username": "adminuser", "is_staff": True, "is_verified": True}
+    # Return a UserResponseSchema instance for an admin user
+    return UserResponseSchema(
+        user_id=test_admin_uuid,
+        username="adminuser",
+        email="admin@example.com",
+        status="Active",
+        credit=1000,
+        is_staff=True,
+        is_super_admin=True,
+        is_verified=True,
+        major="Management",
+        avatar_url=None,
+        bio="Admin bio",
+        phone_number="0987654321",
+        join_time=datetime.now()
+    )
 
 async def mock_get_current_authenticated_user_override():
-    # Return a UserResponseSchema-like dict for an authenticated user
-    # Use a consistent, predictable integer ID for testing
-    return {"user_id": 301, "UserID": 301, "username": "authuser", "email": "auth@example.com", "status": "Active", "credit": 100, "is_staff": False, "is_super_admin": False, "is_verified": True, "major": "", "avatar_url": None, "bio": None, "phone_number": "1234567890", "join_time": datetime.now().isoformat()}
-
+    # This one already returns UserResponseSchema, ensure consistency
+    return UserResponseSchema(
+        user_id=test_authenticated_user_uuid,
+        username="testuser",
+        email="test@example.com",
+        status="Active",
+        credit=100,
+        is_staff=False,
+        is_super_admin=False,
+        is_verified=True,
+        major="Computer Science",
+        avatar_url=None,
+        bio="Test bio",
+        phone_number="1234567890",
+        join_time=datetime.now()
+    )
 
 @pytest.fixture(scope="function")
 def client(
     mock_product_service: AsyncMock,
     mock_db_connection: MagicMock
 ):
-    """Configured TestClient with mocked dependencies."""
-    
+    # Override the actual get_db_connection dependency with our mock
+    app.dependency_overrides[get_product_service_dependency] = lambda: mock_product_service
+
     async def override_get_db_connection_async():
         yield mock_db_connection
 
-    app.dependency_overrides[get_product_service_dependency] = lambda: mock_product_service
     app.dependency_overrides[get_db_connection] = override_get_db_connection_async
     app.dependency_overrides[get_current_user_dependency] = mock_get_current_user_override
     app.dependency_overrides[get_current_active_admin_user_dependency] = mock_get_current_active_admin_user_override
     app.dependency_overrides[get_current_authenticated_user_dependency] = mock_get_current_authenticated_user_override
 
-    with TestClient(app) as tc:
-        # Add mocked user IDs to the test client for easy access in tests
-        tc.test_user_id = 101 # Fixed integer ID
-        tc.test_admin_user_id = 201 # Fixed integer ID
-        tc.test_auth_user_id = 301 # Fixed integer ID
-        yield tc
+    with TestClient(app) as client:
+        yield client
 
-    app.dependency_overrides.clear()
+    # Clean up dependency overrides after the test
+    app.dependency_overrides = {}
 
-# --- 商品接口测试 ---
 @pytest.mark.asyncio
 async def test_create_product(client: TestClient, mock_product_service: AsyncMock):
     # Arrange
@@ -105,7 +204,7 @@ async def test_create_product(client: TestClient, mock_product_service: AsyncMoc
     # The mock_get_current_authenticated_user_override provides the authenticated user's info.
 
     # Use the test_auth_user_id from the client fixture for simulating the current user
-    test_owner_id = client.test_auth_user_id
+    test_owner_id = test_authenticated_user_uuid # This is already a UUID object from client fixture
 
     # 构造商品数据
     product_data = ProductCreate(
@@ -120,7 +219,7 @@ async def test_create_product(client: TestClient, mock_product_service: AsyncMoc
     # Mock the service layer call
     # The service's create_product method is expected to return None on success based on its signature.
     # The API router is responsible for returning the success message.
-    mock_product_service.create_product.return_value = None # Simulate successful creation
+    mock_product_service.create_product.return_value = uuid4() # Simulate successful creation, returning a UUID
 
     # Act
     # Send request using the client with mocked dependencies
@@ -142,7 +241,7 @@ async def test_create_product(client: TestClient, mock_product_service: AsyncMoc
     assert response.json()["message"] == "商品创建成功"
 
     # Assert that the service method was called with the correct arguments
-    # The service's create_product expects conn, owner_id (int), category_name, product_name, description, quantity, price, image_urls
+    # The service's create_product expects conn, owner_id (UUID), category_name, product_name, description, quantity, price, image_urls
     # We need to capture the call arguments and check them.
 
     # The mock_product_service.create_product was called within the API endpoint.
@@ -157,7 +256,7 @@ async def test_create_product(client: TestClient, mock_product_service: AsyncMoc
 
     # Check the arguments
     # arg[0] is the mocked connection
-    # arg[1] should be the owner_id (int)
+    # arg[1] should be the owner_id (UUID)
     # arg[2] should be category_name
     # arg[3] should be product_name
     # arg[4] should be description
@@ -165,7 +264,7 @@ async def test_create_product(client: TestClient, mock_product_service: AsyncMoc
     # arg[6] should be price
     # arg[7] should be image_urls (list of strings)
 
-    assert args[1] == test_owner_id # Check owner_id, now an int
+    assert args[1] == test_owner_id # Check owner_id, now a UUID object
     assert args[2] == product_data.category_name
     assert args[3] == product_data.product_name
     assert args[4] == product_data.description
@@ -180,12 +279,11 @@ async def test_batch_activate_products(client: TestClient, mock_product_service:
     # The mock_get_current_active_admin_user_override provides the authenticated admin user's info.
 
     # Use the test_admin_user_id from the client fixture for simulating the current admin
-    test_admin_id = client.test_admin_user_id
+    admin_id = test_admin_uuid
 
     # Generate some fake product IDs for the batch operation
     product_ids_api = [str(uuid4()) for _ in range(3)] # For API request (list of string UUIDs)
-    # The service layer expects integer IDs. The router converts UUID strings to integers.
-    product_ids_service = [uuid.UUID(pid).int for pid in product_ids_api] # For service call (list of integers)
+    product_ids_service = [UUID(pid) for pid in product_ids_api] # For service call (list of UUID objects)
     
     # Mock the service layer call for batch activation
     # The service's batch_activate_products method is expected to return the count of successfully activated products.
@@ -210,7 +308,7 @@ async def test_batch_activate_products(client: TestClient, mock_product_service:
     assert response.json()["message"] == f"成功激活 {len(product_ids_service)} 件商品" # Modified: Changed to check 'message'
 
     # Assert that the service method was called with the correct arguments
-    # The service's batch_activate_products expects conn, product_ids (List[int]), admin_id (int)
+    # The service's batch_activate_products expects conn, product_ids (List[UUID]), admin_id (UUID)
 
     mock_product_service.batch_activate_products.assert_called_once()
 
@@ -218,11 +316,11 @@ async def test_batch_activate_products(client: TestClient, mock_product_service:
     args, kwargs = mock_product_service.batch_activate_products.call_args
 
     # arg[0] is the mocked connection
-    # arg[1] should be product_ids (List[int])
-    # arg[2] should be admin_id (int)
+    # arg[1] should be product_ids (List[UUID])
+    # arg[2] should be admin_id (UUID)
 
-    assert args[1] == product_ids_service # Check product_ids (list of integers)
-    assert args[2] == test_admin_id # Modified: admin_id is already an int
+    assert args[1] == product_ids_service # Check product_ids (list of UUID objects)
+    assert args[2] == admin_id # Modified: admin_id is already an int
 
 @pytest.mark.asyncio
 async def test_add_favorite(client: TestClient, mock_product_service: AsyncMock):
@@ -231,11 +329,11 @@ async def test_add_favorite(client: TestClient, mock_product_service: AsyncMock)
     # The mock_get_current_authenticated_user_override provides the authenticated user's info.
 
     # Use the test_auth_user_id from the client fixture for simulating the current user
-    test_user_id = client.test_auth_user_id
+    test_user_id = test_authenticated_user_uuid
 
     # Generate a fake product ID
-    fake_product_id_api = 123 # For API request (integer)
-    fake_product_id_service = 123 # For service call (integer)
+    fake_product_id_api = str(uuid4()) # For API request (string UUID)
+    fake_product_id_service = UUID(fake_product_id_api) # For service call (UUID object)
 
     # Mock the service layer call for adding a favorite
     # The service's add_favorite method is expected to return None on success.
@@ -255,19 +353,12 @@ async def test_add_favorite(client: TestClient, mock_product_service: AsyncMock)
     assert response.json()["message"] == "商品收藏成功"
 
     # Assert that the service method was called with the correct arguments
-    # The service's add_favorite expects conn, user_id (int), product_id (int)
-
-    mock_product_service.add_favorite.assert_called_once()
-
-    # Check the arguments
-    args, kwargs = mock_product_service.add_favorite.call_args
-
-    # arg[0] is the mocked connection
-    # arg[1] should be user_id (int)
-    # arg[2] should be product_id (int)
-
-    assert args[1] == test_user_id # Modified: user_id is already an int
-    assert args[2] == fake_product_id_service
+    # The service's add_favorite expects conn, user_id (UUID), product_id (UUID)
+    mock_product_service.add_favorite.assert_called_once_with(
+        ANY,
+        test_user_id, # Ensure user_id is passed as UUID
+        fake_product_id_service # Ensure product_id is passed as UUID
+    )
 
 @pytest.mark.asyncio
 async def test_get_product_list(client: TestClient, mock_product_service: AsyncMock):
@@ -309,7 +400,7 @@ async def test_get_product_list(client: TestClient, mock_product_service: AsyncM
 
     # Act
     response = client.get("/api/v1/products", params={
-        "category_id": 1, # Modified: Use integer for category_id
+        "category_name": "Electronics", # Modified: Pass string category name
         "status": "Active",
         "keyword": "测试",
         "min_price": 50.0,
@@ -325,15 +416,15 @@ async def test_get_product_list(client: TestClient, mock_product_service: AsyncM
 
     # Assert that the service method was called with the correct arguments
     mock_product_service.get_product_list.assert_called_once_with(
-        ANY, # conn
-        1, # category_id (int)
-        "Active", # status
-        "测试", # keyword
-        50.0, # min_price
-        250.0, # max_price
-        "Price", # order_by
-        1, # page_number
-        10 # page_size
+        ANY,
+        "Electronics", # Modified: Assert with string category name
+        "Active",
+        "测试",
+        50.0,
+        250.0,
+        "Price",
+        1,
+        10
     )
 
 @pytest.mark.asyncio
@@ -342,7 +433,7 @@ async def test_get_product_detail(client: TestClient, mock_product_service: Asyn
     # No need to create a user or product directly, data is mocked.
 
     # Generate a fake product ID for the test
-    test_product_id = int(uuid.UUID(mock_products_all[0]["商品ID"])) # Use integer product ID for update, matching DAL/Service expectation
+    test_product_id = mock_products_all[0]["商品ID"] # Use string UUID for API request
 
     mock_product_data = {
         "商品ID": mock_products_all[0]["商品ID"],
@@ -370,15 +461,13 @@ async def test_get_product_detail(client: TestClient, mock_product_service: Asyn
     # Assert
     assert response.status_code == status.HTTP_200_OK
     assert response.json() == mock_product_data
-
-    # Assert that the service method was called with the correct arguments
-    mock_product_service.get_product_detail.assert_called_once_with(ANY, test_product_id)
+    mock_product_service.get_product_detail.assert_called_once_with(ANY, UUID(test_product_id)) # Pass UUID object
 
 @pytest.mark.asyncio
 async def test_get_product_detail_not_found(client: TestClient, mock_product_service: AsyncMock):
     # Arrange
     # Generate a fake product ID that won't be found
-    non_existent_product_id = 9999 # Use integer product ID for update, matching DAL/Service expectation
+    non_existent_product_id = str(uuid4()) # Use string UUID for API request
 
     # Configure the mock_product_service.get_product_detail to return None, simulating not found
     mock_product_service.get_product_detail.return_value = None
@@ -388,10 +477,8 @@ async def test_get_product_detail_not_found(client: TestClient, mock_product_ser
 
     # Assert
     assert response.status_code == status.HTTP_404_NOT_FOUND
-    assert response.json()["detail"] == "商品未找到"
-
-    # Assert that the service method was called with the correct arguments
-    mock_product_service.get_product_detail.assert_called_once_with(ANY, non_existent_product_id)
+    assert response.json().get('detail') == "商品未找到"
+    mock_product_service.get_product_detail.assert_called_once_with(ANY, UUID(non_existent_product_id)) # Pass UUID object
 
 @pytest.mark.asyncio
 async def test_update_product_success(client: TestClient, mock_product_service: AsyncMock):
@@ -400,9 +487,10 @@ async def test_update_product_success(client: TestClient, mock_product_service: 
     # The mock_get_current_authenticated_user_override provides the authenticated user's info.
 
     # Use the test_auth_user_id from the client fixture for simulating the current user (owner)
-    owner_id = client.test_auth_user_id
+    owner_id = test_authenticated_user_uuid
     # Define a fake product ID for the test
-    product_id = int(uuid.UUID(mock_products_all[0]["商品ID"])) # Use integer product ID for update, matching DAL/Service expectation
+    product_id_str = mock_products_all[0]["商品ID"] # Use string UUID for API request
+    product_id_uuid = UUID(product_id_str) # Convert to UUID object for service call
 
     # Prepare product update data
     product_update_data = ProductUpdate(
@@ -418,8 +506,8 @@ async def test_update_product_success(client: TestClient, mock_product_service: 
 
     # Act
     response = client.put(
-        f"/api/v1/products/{product_id}", # Modified: Added /api/v1 prefix
-        json=product_update_data.model_dump(exclude_unset=True) # Use model_dump for Pydantic v2
+        f"/api/v1/products/{product_id_str}", # Modified: Added /api/v1 prefix
+        json=product_update_data.model_dump(exclude_unset=True)
     )
 
     # Assert
@@ -427,21 +515,13 @@ async def test_update_product_success(client: TestClient, mock_product_service: 
     assert response.json()["message"] == "Product updated successfully"
 
     # Assert that the service method was called with the correct arguments
-    # The service's update_product expects conn, product_id (int), owner_id (int), product_update_data (ProductUpdate)
-
-    mock_product_service.update_product.assert_called_once()
-
-    # Check the arguments
-    args, kwargs = mock_product_service.update_product.call_args
-
-    # arg[0] is the mocked connection
-    # arg[1] should be product_id (int)
-    # arg[2] should be owner_id (int)
-    # arg[3] should be product_update_data (ProductUpdate object)
-
-    assert args[1] == product_id
-    assert args[2] == owner_id # Modified: owner_id is already an int
-    assert args[3] == product_update_data
+    # The service's update_product expects conn, product_id (UUID), owner_id (UUID), product_update_data
+    mock_product_service.update_product.assert_called_once_with(
+        ANY,
+        product_id_uuid,
+        owner_id,
+        product_update_data
+    )
 
 @pytest.mark.asyncio
 async def test_update_product_permission_denied(client: TestClient, mock_product_service: AsyncMock):
@@ -450,9 +530,9 @@ async def test_update_product_permission_denied(client: TestClient, mock_product
     # The mock_get_current_authenticated_user_override provides the authenticated user's info.
 
     # Use a different user ID to simulate a non-owner attempting the update
-    non_owner_user_id = client.test_auth_user_id # Changed to use fixed int ID
+    non_owner_user_id = test_authenticated_user_uuid # Changed to use fixed int ID
     # Define a fake product ID for the test
-    product_id = int(uuid.UUID(mock_products_all[0]["商品ID"])) # Modified: Changed to int
+    product_id = UUID(mock_products_all[0]["商品ID"]) # Modified: Changed to int
 
     # Prepare product update data
     product_update_data = ProductUpdate(
@@ -486,22 +566,23 @@ async def test_delete_product_success(client: TestClient, mock_product_service: 
     # The mock_get_current_authenticated_user_override provides the authenticated user's info.
 
     # Use the test_auth_user_id from the client fixture for simulating the current user (owner)
-    owner_id = client.test_auth_user_id
+    owner_id = test_authenticated_user_uuid
     # Define a fake product ID for the test
-    product_id = int(uuid.UUID(mock_products_all[0]["商品ID"])) # Modified: Changed to int
+    product_id_str = mock_products_all[0]["商品ID"] # Use string UUID for API request
+    product_id_uuid = UUID(product_id_str) # Convert to UUID object for service call
 
     # Configure the mock_product_service.delete_product to do nothing on success
     mock_product_service.delete_product.return_value = None # Assuming service returns None or doesn't return explicitly on success
 
     # Act
-    response = client.delete(f"/api/v1/products/{product_id}") # Modified: Added /api/v1 prefix
+    response = client.delete(f"/api/v1/products/{product_id_str}") # Modified: Added /api/v1 prefix
 
     # Assert
     assert response.status_code == status.HTTP_200_OK # Expect 200 OK for successful deletion
     assert response.json()["message"] == "商品删除成功"
 
     # Assert that the service method was called with the correct arguments
-    mock_product_service.delete_product.assert_called_once_with(ANY, product_id, owner_id) # Modified: owner_id is already an int
+    mock_product_service.delete_product.assert_called_once_with(ANY, product_id_uuid, owner_id)
 
 @pytest.mark.asyncio
 async def test_withdraw_product_success(client: TestClient, mock_product_service: AsyncMock):
@@ -510,22 +591,23 @@ async def test_withdraw_product_success(client: TestClient, mock_product_service
     # The mock_get_current_authenticated_user_override provides the authenticated user's info.
 
     # Use the test_auth_user_id from the client fixture for simulating the current user (owner)
-    owner_id = client.test_auth_user_id
+    owner_id = test_authenticated_user_uuid
     # Define a fake product ID for the test
-    product_id = int(uuid.UUID(mock_products_all[0]["商品ID"])) # Modified: Changed to int
+    product_id_str = mock_products_all[0]["商品ID"] # Use string UUID for API request
+    product_id_uuid = UUID(product_id_str) # Convert to UUID object for service call
 
     # Configure the mock_product_service.withdraw_product to do nothing on success
     mock_product_service.withdraw_product.return_value = None # Assuming service returns None or doesn't return explicitly on success
 
     # Act
-    response = client.put(f"/api/v1/products/{product_id}/status/withdraw") # Modified: Added /api/v1 prefix
+    response = client.put(f"/api/v1/products/{product_id_str}/status/withdraw") # Modified: Added /api/v1 prefix
 
     # Assert
     assert response.status_code == status.HTTP_200_OK # Expect 200 OK for successful withdrawal
     assert response.json()["message"] == "商品已成功下架" # Modified: Changed expected message
 
     # Assert that the service method was called with the correct arguments
-    mock_product_service.withdraw_product.assert_called_once_with(ANY, product_id, owner_id) # Modified: owner_id is already an int
+    mock_product_service.withdraw_product.assert_called_once_with(ANY, product_id_uuid, owner_id)
 
 @pytest.mark.asyncio
 async def test_withdraw_product_permission_denied(client: TestClient, mock_product_service: AsyncMock):
@@ -534,9 +616,9 @@ async def test_withdraw_product_permission_denied(client: TestClient, mock_produ
     # The mock_get_current_authenticated_user_override provides the authenticated user's info.
 
     # Use a different user ID to simulate a non-owner attempting the withdrawal
-    non_owner_user_id = client.test_auth_user_id # Changed to use fixed int ID
+    non_owner_user_id = test_authenticated_user_uuid # Changed to use fixed int ID
     # Define a fake product ID for the test
-    product_id = int(uuid.UUID(mock_products_all[0]["商品ID"])) # Modified: Changed to int
+    product_id = UUID(mock_products_all[0]["商品ID"]) # Modified: Changed to int
 
     # Configure the mock_product_service.withdraw_product to raise a PermissionError
     mock_product_service.withdraw_product.side_effect = PermissionError("您无权下架此商品")
@@ -581,7 +663,7 @@ async def test_get_product_list_filter_by_category(client: TestClient, mock_prod
 
     # Act
     response = client.get("/api/v1/products", params={
-        "category_id": 1, # Modified: Pass integer category ID
+        "category_name": "Electronics", # Modified: Pass string category name
         "status": "Active"
     })
 
@@ -592,7 +674,7 @@ async def test_get_product_list_filter_by_category(client: TestClient, mock_prod
     # Assert that the service method was called with the correct arguments
     mock_product_service.get_product_list.assert_called_once_with(
         ANY,
-        1, # Modified: Assert with integer category ID
+        "Electronics", # Modified: Assert with string category name
         "Active",
         None, None, None, # keyword, min_price, max_price
         'PostTime', 1, 10 # order_by, page_number, page_size
@@ -757,9 +839,13 @@ async def test_get_product_list_pagination_and_sorting(client: TestClient, mock_
     # Using global mock_products_all for consistency.
     global mock_products_all # Ensure we are using the global mock data
 
-    async def mock_get_product_list_side_effect_pagination_sorting(conn, category_id=None, status=None, keyword=None, min_price=None, max_price=None, order_by='PostTime', page_number=1, page_size=10, **kwargs):
+    async def mock_get_product_list_side_effect_pagination_sorting(conn, category_name=None, status=None, keyword=None, min_price=None, max_price=None, order_by='PostTime', page_number=1, page_size=10, **kwargs):
         # Filter by status if provided
-        filtered_products = [p for p in mock_products_all if p["商品状态"] == "Active"]
+        # Use the provided mock_products_all for filtering
+        filtered_products = list(mock_products_all) # Create a copy to avoid modifying original
+
+        if status:
+            filtered_products = [p for p in filtered_products if p["商品状态"] == status]
 
         def get_sort_key(product):
             if order_by == "Price":
@@ -767,6 +853,7 @@ async def test_get_product_list_pagination_and_sorting(client: TestClient, mock_
             elif order_by == "ProductName":
                 return product["商品名称"]
             elif order_by == "PostTime":
+                # Convert ISO format string to datetime for proper comparison
                 return datetime.fromisoformat(product["发布时间"])
             return datetime.fromisoformat(product["发布时间"]) # Default sort key
 
@@ -790,9 +877,11 @@ async def test_get_product_list_pagination_and_sorting(client: TestClient, mock_
     })
     assert response1.status_code == status.HTTP_200_OK
     assert len(response1.json()) == 2
-    # Expected order: The Great Gatsby (68.0), Logitech MX Master 3 (599.0)
-    assert response1.json()[0]["商品名称"] == "The Great Gatsby"
-    assert response1.json()[1]["商品名称"] == "Logitech MX Master 3"
+    # Expected order based on mock_products_all sorted by price ASC:
+    # 1. 机械键盘 (450.0)
+    # 2. 智能手表 (1200.0)
+    assert response1.json()[0]["商品名称"] == "机械键盘"
+    assert response1.json()[1]["商品名称"] == "复古相机"
     mock_product_service.get_product_list.assert_any_call(ANY, None, None, None, None, None, "Price", 1, 2)
 
     # Test case 2: Page 2, size 2, sorted by Price ASC
@@ -803,10 +892,11 @@ async def test_get_product_list_pagination_and_sorting(client: TestClient, mock_
         # "sortOrder": "ASC" # Removed, as API doesn't support this directly
     })
     assert response2.status_code == status.HTTP_200_OK
-    assert len(response2.json()) == 2
-    # Expected order: Sony WH-1000XM4 (1999.0), Samsung Galaxy S21 (5999.0)
-    assert response2.json()[0]["商品名称"] == "Sony WH-1000XM4"
-    assert response2.json()[1]["商品名称"] == "Samsung Galaxy S21"
+    assert len(response2.json()) == 2 # Only one product left on the second page
+    # Expected order based on mock_products_all sorted by price ASC:
+    # 1. 旧笔记本 (2500.0)
+    assert response2.json()[0]["商品名称"] == "智能手表"
+    assert response2.json()[1]["商品名称"] == "旧笔记本"
     mock_product_service.get_product_list.assert_any_call(ANY, None, None, None, None, None, "Price", 2, 2)
 
     # Test case 3: Sorted by PostTime DESC
@@ -815,12 +905,17 @@ async def test_get_product_list_pagination_and_sorting(client: TestClient, mock_
         # "sortOrder": "DESC" # Removed, as API doesn't support this directly
     })
     assert response3.status_code == status.HTTP_200_OK
-    assert len(response3.json()) == 4 # Only 4 active products in mock_products_all
-    # Expected order (most recent first): The Great Gatsby, Logitech MX Master 3, Sony WH-1000XM4, Samsung Galaxy S21
-    assert response3.json()[0]["商品名称"] == "The Great Gatsby"
-    assert response3.json()[1]["商品名称"] == "Logitech MX Master 3"
-    assert response3.json()[2]["商品名称"] == "Sony WH-1000XM4"
-    assert response3.json()[3]["商品名称"] == "Samsung Galaxy S21"
+    assert len(response3.json()) == 5 # All 5 products in mock_products_all
+    # Expected order (most recent first) based on mock_products_all:
+    # newest to oldest
+    # Note: `datetime.now()` in mock_products_all means they will all have very similar timestamps.
+    # For stable sorting, you might need to adjust mock_products_all to have distinct '发布时间'.
+    # Assuming current datetime.now() order for simplicity in test setup.
+    assert response3.json()[0]["商品名称"] == "复古相机"
+    assert response3.json()[1]["商品名称"] == "智能手表"
+    assert response3.json()[2]["商品名称"] == "机械键盘"
+    assert response3.json()[3]["商品名称"] == "旧笔记本"
+    assert response3.json()[4]["商品名称"] == "测试手机"
     mock_product_service.get_product_list.assert_any_call(ANY, None, None, None, None, None, "PostTime", 1, 10)
 
 @pytest.mark.asyncio
@@ -833,17 +928,17 @@ async def test_get_product_list_filter_combinations(client: TestClient, mock_pro
     global mock_products_all # Use the global mock_products_all
 
     # Configure the mock_product_service.get_product_list side effect
-    async def mock_get_product_list_side_effect(conn, category_id=None, status=None, keyword=None, min_price=None, max_price=None, order_by='PostTime', page_number=1, page_size=10, **kwargs):
+    async def mock_get_product_list_side_effect(conn, category_name=None, status=None, keyword=None, min_price=None, max_price=None, order_by='PostTime', page_number=1, page_size=10, **kwargs):
         # Map integer category_id to string category name for filtering mock data
-        category_id_to_name = {
-            1: "Electronics",
-            2: "Books",
-            3: "Other", # Added mapping for category 3
-            4: "Home", # Added mapping for category 4
-            5: "Sports", # Added mapping for category 5
-            # Add other mappings as needed
-        }
-        category_name_filter = category_id_to_name.get(category_id) if isinstance(category_id, int) else category_id
+        # This mapping is no longer needed as category_name is passed directly
+        # category_id_to_name = {
+        #     1: "Electronics",
+        #     2: "Accessories", # Corrected mapping for category 2
+        #     3: "Wearables",   # Corrected mapping for category 3
+        #     4: "Photography"  # Corrected mapping for category 4
+        #     # Add other mappings as needed
+        # }
+        # category_name_filter = category_id_to_name.get(category_id) if isinstance(category_id, int) else category_id
 
         status_filter = status # Corrected: Use status directly
         search_query = keyword # Corrected: Use keyword directly
@@ -852,7 +947,7 @@ async def test_get_product_list_filter_combinations(client: TestClient, mock_pro
         page_number_filter = page_number # Corrected: Use page_number directly
         page_size_filter = page_size # Corrected: Use page_size directly
         order_by_field = order_by # Corrected: Use order_by directly
-        sort_order = kwargs.get("sortOrder", "DESC")
+        # sort_order = kwargs.get("sortOrder", "DESC") # Not directly used for `sorted` built-in
 
         # Apply filters
         filtered_products = []
@@ -862,7 +957,7 @@ async def test_get_product_list_filter_combinations(client: TestClient, mock_pro
             if status_filter and p["商品状态"] != status_filter:
                 is_match = False
 
-            if is_match and category_name_filter and p.get("商品类别") != category_name_filter:
+            if is_match and category_name and p.get("商品类别") != category_name: # Use category_name directly
                 is_match = False
 
             if is_match and search_query:
@@ -890,26 +985,38 @@ async def test_get_product_list_filter_combinations(client: TestClient, mock_pro
 
         # Determine reverse_sort based on order_by, as API doesn't take sortOrder directly
         # Assume PostTime is DESC by default, others ASC by default if not specified
+        # For this test, we need to ensure the sorting matches the expected output
         reverse_sort = True if order_by_field == "PostTime" else False
-        sorted_products = sorted(filtered_products, key=get_sort_key, reverse=reverse_sort)
+
+        # Special handling for Price sorting in this combined test to match expected output
+        if order_by_field == "Price":
+            sorted_products = sorted(filtered_products, key=get_sort_key, reverse=False) # ASC for price
+        else:
+            sorted_products = sorted(filtered_products, key=get_sort_key, reverse=reverse_sort)
 
         # Apply pagination
         start_index = (page_number_filter - 1) * page_size_filter
         end_index = start_index + page_size_filter
         paginated_products = sorted_products[start_index:end_index]
 
-        # Update total count in the paginated results
-        total_count = len(filtered_products)
+        # Update total count in the paginated results (optional, depends on API contract)
+        # For these tests, we are asserting on the product list directly.
         for p in paginated_products:
-             p["总商品数"] = total_count
+            p["总商品数"] = len(filtered_products) # Total count of filtered products
 
         return paginated_products
 
     mock_product_service.get_product_list.side_effect = mock_get_product_list_side_effect
 
     # Test case 1: Filter by Category and Price Range, Paginate and Sort by Price ASC
+    # Category: Electronics (ID 1)
+    # Price Range: 1000.00 - 7000.00
+    # From mock_products_all, Electronics are: "测试手机" (5999.0), "旧笔记本" (2500.0)
+    # Both fall within the price range.
+    # Sorted by Price ASC: "旧笔记本" (2500.0), "测试手机" (5999.0)
+    # Page 1, size 2: "旧笔记本", "测试手机"
     response1 = client.get("/api/v1/products", params={
-        "category_id": 1, # Changed to category_id (int)
+        "category_name": "Electronics", # Changed to category_name (string)
         "min_price": 1000.00,
         "max_price": 7000.00,
         "page_number": 1,
@@ -928,38 +1035,41 @@ async def test_get_product_list_filter_combinations(client: TestClient, mock_pro
         # Filtered & Sorted: Sony(1999), Samsung(5999)
         # After pagination (page 1, size 2):
         {
-            "商品ID": mock_products_all[0]["商品ID"],
-            "商品名称": "Sony WH-1000XM4",
-            "商品描述": "Noise-cancelling headphones",
-            "库存": 15,
-            "价格": 1999.00,
-            "发布时间": "2023-01-05T10:00:00.000000", # Use fixed value
-            "商品状态": "Active",
-            "发布者用户名": "seller1",
+            "商品ID": mock_products_all[1]["商品ID"],
+            "商品名称": "旧笔记本",
+            "商品描述": "一台二手的旧笔记本，性能良好。",
+            "库存": 5,
+            "价格": 2500.0,
+            "发布时间": "2023-01-02T10:00:00.000000",
+            "商品状态": "PendingReview",
+            "发布者用户名": "user2",
             "商品类别": "Electronics",
-            "主图URL": "/uploads/sony.jpg",
+            "主图URL": "http://example.com/old_laptop.jpg",
             "images": [],
             "总商品数": 2 # Use fixed value
         },
         {
-            "商品ID": mock_products_all[1]["商品ID"],
-            "商品名称": "Samsung Galaxy S21",
-            "商品描述": "Android smartphone",
-            "库存": 20,
-            "价格": 5999.00,
-            "发布时间": "2023-01-01T10:00:00.000000", # Use fixed value
+            "商品ID": mock_products_all[0]["商品ID"],
+            "商品名称": "测试手机",
+            "商品描述": "一个很棒的测试手机",
+            "库存": 50,
+            "价格": 5999.0,
+            "发布时间": "2023-01-01T10:00:00.000000",
             "商品状态": "Active",
-            "发布者用户名": "seller2",
+            "发布者用户名": "user1",
             "商品类别": "Electronics",
-            "主图URL": "/uploads/galaxy.jpg",
-            "images": [],
+            "主图URL": "http://example.com/test_phone.jpg",
+            "images": [
+                {"image_url": "http://example.com/test_phone_1.jpg", "sort_order": 0, "upload_time": mock_products_all[0]["images"][0]["upload_time"]},
+                {"image_url": "http://example.com/test_phone_2.jpg", "sort_order": 1, "upload_time": mock_products_all[0]["images"][1]["upload_time"]}
+            ],
             "总商品数": 2 # Use fixed value
         }
     ]
     assert response1.json() == expected_products_1
     mock_product_service.get_product_list.assert_any_call(
         ANY,
-        1, # category_id (int)
+        "Electronics", # category_id (string)
         None, # status
         None, # keyword
         1000.00, # min_price
@@ -972,7 +1082,7 @@ async def test_get_product_list_filter_combinations(client: TestClient, mock_pro
     # Test case 2: Filter by Status and Keyword, Paginate and Sort by PostTime DESC
     response2 = client.get("/api/v1/products", params={
         "status": "Active",
-        "keyword": "mouse",
+        "keyword": "手机",
         "page_number": 1,
         "page_size": 1,
         "order_by": "PostTime",
@@ -984,17 +1094,20 @@ async def test_get_product_list_filter_combinations(client: TestClient, mock_pro
         # Original: Logitech MX Master 3 (Active, 'mouse' in name)
         # Filtered & Sorted:
         {
-            "商品ID": mock_products_all[2]["商品ID"],
-            "商品名称": "Logitech MX Master 3",
-            "商品描述": "Advanced wireless mouse",
-            "库存": 25,
-            "价格": 599.00,
-            "发布时间": "2023-01-07T10:00:00.000000", # Use fixed value
+            "商品ID": mock_products_all[0]["商品ID"],
+            "商品名称": "测试手机",
+            "商品描述": "一个很棒的测试手机",
+            "库存": 50,
+            "价格": 5999.0,
+            "发布时间": "2023-01-01T10:00:00.000000",
             "商品状态": "Active",
-            "发布者用户名": "seller1",
+            "发布者用户名": "user1",
             "商品类别": "Electronics",
-            "主图URL": "/uploads/logitech.jpg",
-            "images": [],
+            "主图URL": "http://example.com/test_phone.jpg",
+            "images": [
+                {"image_url": "http://example.com/test_phone_1.jpg", "sort_order": 0, "upload_time": mock_products_all[0]["images"][0]["upload_time"]},
+                {"image_url": "http://example.com/test_phone_2.jpg", "sort_order": 1, "upload_time": mock_products_all[0]["images"][1]["upload_time"]}
+            ],
             "总商品数": 1 # Use fixed value
         }
     ]
@@ -1003,7 +1116,7 @@ async def test_get_product_list_filter_combinations(client: TestClient, mock_pro
         ANY,
         None, # category_id
         "Active", # status
-        "mouse", # keyword
+        "手机", # keyword
         None, None, # min_price, max_price
         "PostTime", # order_by
         1, # page_number
@@ -1012,25 +1125,25 @@ async def test_get_product_list_filter_combinations(client: TestClient, mock_pro
 
     # Test case 3: Filter by Category and Status, and Keyword
     response3 = client.get("/api/v1/products", params={
-        "category_id": 2, # Changed to category_id (int)
+        "category_name": "Accessories", # Changed to category_name (string)
         "status": "Active",
-        "keyword": "gatsby"
+        "keyword": "键盘"
     })
     assert response3.status_code == status.HTTP_200_OK
     expected_products_3 = [
         # After filtering for Books, Active, keyword='gatsby':
         # Original: The Great Gatsby (Books, Active, 'gatsby' in name)
         {
-            "商品ID": mock_products_all[3]["商品ID"],
-            "商品名称": "The Great Gatsby",
-            "商品描述": "Classic novel by F. Scott Fitzgerald",
-            "库存": 30,
-            "价格": 68.00,
-            "发布时间": "2023-01-09T10:00:00.000000", # Use fixed value
+            "商品ID": mock_products_all[2]["商品ID"],
+            "商品名称": "机械键盘",
+            "商品描述": "手感极佳的机械键盘。",
+            "库存": 20,
+            "价格": 450.0,
+            "发布时间": "2023-01-03T10:00:00.000000",
             "商品状态": "Active",
-            "发布者用户名": "seller3",
-            "商品类别": "Books",
-            "主图URL": "/uploads/gatsby.jpg",
+            "发布者用户名": "user1",
+            "商品类别": "Accessories",
+            "主图URL": "http://example.com/keyboard.jpg",
             "images": [],
             "总商品数": 1 # Use fixed value
         }
@@ -1038,9 +1151,9 @@ async def test_get_product_list_filter_combinations(client: TestClient, mock_pro
     assert response3.json() == expected_products_3
     mock_product_service.get_product_list.assert_any_call(
         ANY,
-        2, # category_id (int)
+        "Accessories", # category_id (string)
         "Active", # status
-        "gatsby", # keyword
+        "键盘", # keyword
         None, None, # min_price, max_price
         'PostTime', 1, 10
     )
@@ -1051,21 +1164,27 @@ async def test_remove_favorite_success(client: TestClient, mock_product_service:
     # No need to create a user or product directly, mocking handles data.
 
     # Use the test_auth_user_id from the client fixture for simulating the current user
-    user_id = client.test_auth_user_id
+    user_id = test_authenticated_user_uuid
     # Define a fake product ID for the test
-    product_id = int(uuid.UUID(mock_products_all[0]["商品ID"])) # Modified: Changed to int
+    product_id_str = mock_products_all[0]["商品ID"] # Use string UUID for API request
+    product_id_uuid = UUID(product_id_str) # Convert to UUID object for service call
 
     # Configure the mock_product_service.remove_favorite to do nothing on success
     mock_product_service.remove_favorite.return_value = None # Assuming service returns None or doesn't return explicitly on success
 
     # Act
-    response = client.delete(f"/api/v1/products/{product_id}/favorite") # Modified: Added /api/v1 prefix
+    response = client.delete(f"/api/v1/products/{product_id_str}/favorite") # Modified: Added /api/v1 prefix
 
     # Assert
     assert response.status_code == status.HTTP_200_OK # Expect 200 OK for successful removal
     assert response.json()["message"] == "商品已成功从收藏列表中移除"
 
-    mock_product_service.remove_favorite.assert_called_once_with(ANY, user_id, product_id) # Modified: user_id is already an int
+    # Assert that the service method was called with the correct arguments
+    mock_product_service.remove_favorite.assert_called_once_with(
+        ANY,
+        user_id,
+        product_id_uuid
+    )
 
 @pytest.mark.asyncio
 async def test_remove_favorite_not_favorited(client: TestClient, mock_product_service: AsyncMock):
@@ -1073,22 +1192,24 @@ async def test_remove_favorite_not_favorited(client: TestClient, mock_product_se
     # No need to create a user or product directly, mocking handles data.
 
     # Use the test_auth_user_id from the client fixture for simulating the current user
-    user_id = client.test_auth_user_id
+    user_id = test_authenticated_user_uuid
     # Define a fake product ID for the test
-    product_id = int(uuid.UUID(mock_products_all[0]["商品ID"])) # Modified: Changed to int
+    product_id_str = mock_products_all[0]["商品ID"] # Use string UUID for API request
+    product_id_uuid = UUID(product_id_str) # Convert to UUID object for service call
 
     # Configure the mock_product_service.remove_favorite to raise a ValueError to simulate not favorited
     mock_product_service.remove_favorite.side_effect = ValueError("该商品不在您的收藏列表中。") # Simulate service raising ValueError
+    print(f"DEBUG: remove_favorite side_effect set to: {mock_product_service.remove_favorite.side_effect}")
 
     # Act
-    response = client.delete(f"/api/v1/products/{product_id}/favorite") # Modified: Added /api/v1 prefix
+    response = client.delete(f"/api/v1/products/{product_id_str}/favorite") # Modified: Added /api/v1 prefix
 
     # Assert
     # The router should catch the ValueError from the service and return a 400 HTTP exception
     assert response.status_code == status.HTTP_400_BAD_REQUEST
     assert response.json()["detail"] == "该商品不在您的收藏列表中。"
 
-    mock_product_service.remove_favorite.assert_called_once_with(ANY, user_id, product_id) # Modified: user_id is already an int
+    mock_product_service.remove_favorite.assert_called_once_with(ANY, user_id, product_id_uuid) # Modified: user_id is already an int
 
 @pytest.mark.asyncio
 async def test_get_user_favorites(client: TestClient, mock_product_service: AsyncMock):
@@ -1096,7 +1217,7 @@ async def test_get_user_favorites(client: TestClient, mock_product_service: Asyn
     # No need to create a user or product directly, mocking handles data.
 
     # Use the test_auth_user_id from the client fixture for simulating the current user
-    user_id = client.test_auth_user_id
+    user_id = test_authenticated_user_uuid
 
     # Define mock data that the service should return (list of favorite products)
     mock_favorite_products = [
@@ -1141,7 +1262,7 @@ async def test_get_user_favorites(client: TestClient, mock_product_service: Asyn
     assert response.json() == mock_favorite_products
 
     # Assert that the service method was called with the correct arguments
-    mock_product_service.get_user_favorites.assert_called_once_with(ANY, user_id) # Modified: user_id is already an int
+    mock_product_service.get_user_favorites.assert_called_once_with(ANY, user_id)
 
 @pytest.mark.asyncio
 async def test_admin_activate_product_success(client: TestClient, mock_product_service: AsyncMock):
@@ -1149,22 +1270,23 @@ async def test_admin_activate_product_success(client: TestClient, mock_product_s
     # No need to create users or products directly, mocking handles data and authentication.
 
     # Use the test_admin_user_id from the client fixture for simulating the current admin
-    admin_id = client.test_admin_user_id
+    admin_id = test_admin_uuid
     # Define a fake product ID for the test
-    product_id = int(uuid.UUID(mock_products_all[0]["商品ID"])) # Use integer product ID for update, matching DAL/Service expectation
+    product_id_str = mock_products_all[0]["商品ID"] # Use string UUID for API request
+    product_id_uuid = UUID(product_id_str) # Convert to UUID object for service call
 
     # Configure the mock_product_service.activate_product to do nothing on success
     mock_product_service.activate_product.return_value = None # Assuming service returns None or doesn't return explicitly on success
 
     # Act
-    response = client.put(f"/api/v1/products/{product_id}/status/activate") # Modified: Added /api/v1 prefix
+    response = client.put(f"/api/v1/products/{product_id_str}/status/activate") # Modified: Added /api/v1 prefix
 
     # Assert
     assert response.status_code == status.HTTP_200_OK # Expect 200 OK for successful activation
     assert response.json()["message"] == "商品已成功激活"
 
     # Assert that the service method was called with the correct arguments
-    mock_product_service.activate_product.assert_called_once_with(ANY, product_id, admin_id) # Modified: admin_id is already an int
+    mock_product_service.activate_product.assert_called_once_with(ANY, product_id_uuid, admin_id)
 
 @pytest.mark.asyncio
 async def test_admin_activate_product_permission_denied(client: TestClient, mock_product_service: AsyncMock):
@@ -1172,22 +1294,31 @@ async def test_admin_activate_product_permission_denied(client: TestClient, mock
     # No need to create users or products directly, mocking handles data and authentication.
 
     # Define a fake product ID for the test
-    product_id = int(uuid.UUID(mock_products_all[0]["商品ID"])) # Modified: Changed to int
+    product_id_str = mock_products_all[0]["商品ID"] # Use string UUID for API request
+    product_id_uuid = UUID(product_id_str) # Convert to UUID object for service call
+
+    # Use a regular user ID to simulate permission denied
+    regular_user_id = test_user_uuid
 
     # Temporarily override the get_current_active_admin_user dependency
     async def mock_get_current_active_admin_user_forbidden_override():
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="您无权审核商品")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权执行此操作，只有管理员可以激活商品。")
 
     original_dependency = app.dependency_overrides.get(get_current_active_admin_user_dependency) # Store original
     app.dependency_overrides[get_current_active_admin_user_dependency] = mock_get_current_active_admin_user_forbidden_override
 
     try:
         # Act
-        response = client.put(f"/api/v1/products/{product_id}/status/activate") # Modified: Added /api/v1 prefix
+        response = client.put(
+            f"/api/v1/products/{product_id_str}/status/activate",
+            headers={
+                "Authorization": f"Bearer fake-token-{regular_user_id}" # Use regular user's token
+            }
+        )
 
         # Assert
-        assert response.status_code == status.HTTP_403_FORBIDDEN
-        assert response.json()["detail"] == "您无权审核商品"
+        assert response.status_code == status.HTTP_403_FORBIDDEN # Expect 403 Forbidden
+        assert response.json()["detail"] == "无权执行此操作，只有管理员可以激活商品。"
 
         # Assert that the service method was NOT called
         mock_product_service.activate_product.assert_not_called()
@@ -1204,9 +1335,9 @@ async def test_admin_reject_product_success(client: TestClient, mock_product_ser
     # No need to create users or products directly, mocking handles data and authentication.
 
     # Use the test_admin_user_id from the client fixture for simulating the current admin
-    admin_id = client.test_admin_user_id
+    admin_id = test_admin_uuid
     # Define a fake product ID for the test
-    product_id = int(uuid.UUID(mock_products_all[0]["商品ID"])) # Use integer product ID for update, matching DAL/Service expectation
+    product_id = UUID(mock_products_all[0]["商品ID"]) # Use integer product ID for update, matching DAL/Service expectation
     # Define a reason for rejection
     reason = "Rejected for testing purposes."
 
@@ -1229,7 +1360,7 @@ async def test_admin_reject_product_permission_denied(client: TestClient, mock_p
     # No need to create users or products directly, mocking handles data and authentication.
 
     # Define a fake product ID for the test
-    product_id = int(uuid.UUID(mock_products_all[0]["商品ID"])) # Modified: Changed to int
+    product_id = UUID(mock_products_all[0]["商品ID"]) # Modified: Changed to int
     # Define a reason for rejection
     reason = "Attempted rejection without admin permission."
 
@@ -1263,13 +1394,13 @@ async def test_admin_batch_activate_products(client: TestClient, mock_product_se
     # No need to create users or products directly, mocking handles data and authentication.
 
     # Use the test_admin_user_id from the client fixture for simulating the current admin
-    admin_id = client.test_admin_user_id
+    admin_id = test_admin_uuid
     # Define fake product IDs for the test
-    product_ids_int = [int(uuid.UUID(mock_products_all[0]["商品ID"])), int(uuid.UUID(mock_products_all[1]["商品ID"])), int(uuid.UUID(mock_products_all[2]["商品ID"]))] # Use integer IDs, matching DAL/Service expectation
+    product_ids_uuid = [UUID(mock_products_all[0]["商品ID"]), UUID(mock_products_all[1]["商品ID"]), UUID(mock_products_all[2]["商品ID"])] # Use integer IDs, matching DAL/Service expectation
     product_ids_str = [mock_products_all[0]["商品ID"], mock_products_all[1]["商品ID"], mock_products_all[2]["商品ID"]] # Keep for JSON payload
 
     # Configure the mock_product_service.batch_activate_products to return a success count
-    success_count = len(product_ids_int)
+    success_count = len(product_ids_uuid)
     mock_product_service.batch_activate_products.return_value = success_count
 
     # Act
@@ -1289,7 +1420,7 @@ async def test_admin_batch_activate_products(client: TestClient, mock_product_se
     assert response.json()["message"] == f"成功激活 {success_count} 件商品"
 
     # Assert that the service method was called with the correct arguments
-    # The service's batch_activate_products expects conn, product_ids (List[int]), admin_id (int)
+    # The service's batch_activate_products expects conn, product_ids (List[UUID]), admin_id (UUID)
 
     mock_product_service.batch_activate_products.assert_called_once()
 
@@ -1297,10 +1428,10 @@ async def test_admin_batch_activate_products(client: TestClient, mock_product_se
     args, kwargs = mock_product_service.batch_activate_products.call_args
 
     # arg[0] is the mocked connection
-    # arg[1] should be product_ids (List[int])
-    # arg[2] should be admin_id (int)
+    # arg[1] should be product_ids (List[UUID])
+    # arg[2] should be admin_id (UUID)
 
-    assert args[1] == product_ids_int # Check product_ids (convert to int)
+    assert args[1] == product_ids_uuid # Check product_ids (list of UUID objects)
     assert args[2] == admin_id # Modified: admin_id is already an int
 
 @pytest.mark.asyncio
@@ -1366,17 +1497,18 @@ async def test_get_product_list_filter_pagination_sorting_combinations(client: T
     global mock_products_all # Use the global mock_products_all
 
     # Configure the mock_product_service.get_product_list side effect
-    async def mock_get_product_list_side_effect(conn, category_id=None, status=None, keyword=None, min_price=None, max_price=None, order_by='PostTime', page_number=1, page_size=10, **kwargs):
+    async def mock_get_product_list_side_effect(conn, category_name=None, status=None, keyword=None, min_price=None, max_price=None, order_by='PostTime', page_number=1, page_size=10, **kwargs):
         # Map integer category_id to string category name for filtering mock data
-        category_id_to_name = {
-            1: "Electronics",
-            2: "Books",
-            3: "Other", # Added mapping for category 3
-            4: "Home", # Added mapping for category 4
-            5: "Sports", # Added mapping for category 5
-            # Add other mappings as needed
-        }
-        category_name_filter = category_id_to_name.get(category_id) if isinstance(category_id, int) else category_id
+        # This mapping is no longer needed as category_name is passed directly
+        # category_id_to_name = {
+        #     1: "Electronics",
+        #     2: "Books",
+        #     3: "Other", # Added mapping for category 3
+        #     4: "Home", # Added mapping for category 4
+        #     5: "Sports", # Added mapping for category 5
+        #     # Add other mappings as needed
+        # }
+        category_name_filter = category_name # Changed: Directly use category_name
 
         status_filter = status # Corrected: Use status directly
         search_query = keyword # Corrected: Use keyword directly
@@ -1442,7 +1574,7 @@ async def test_get_product_list_filter_pagination_sorting_combinations(client: T
 
     # Test case 1: Filter by Category and Price Range, Paginate and Sort by Price ASC
     response1 = client.get("/api/v1/products", params={
-        "category_id": 1, # Changed to category_id (int)
+        "category_name": "Electronics", # Changed to category_name (string)
         "min_price": 1000.00,
         "max_price": 7000.00,
         "page_number": 1,
@@ -1461,38 +1593,41 @@ async def test_get_product_list_filter_pagination_sorting_combinations(client: T
         # Filtered & Sorted: Sony(1999), Samsung(5999)
         # After pagination (page 1, size 2):
         {
-            "商品ID": mock_products_all[0]["商品ID"],
-            "商品名称": "Sony WH-1000XM4",
-            "商品描述": "Noise-cancelling headphones",
-            "库存": 15,
-            "价格": 1999.00,
-            "发布时间": "2023-01-05T10:00:00.000000", # Use fixed value
-            "商品状态": "Active",
-            "发布者用户名": "seller1",
+            "商品ID": mock_products_all[1]["商品ID"],
+            "商品名称": "旧笔记本",
+            "商品描述": "一台二手的旧笔记本，性能良好。",
+            "库存": 5,
+            "价格": 2500.0,
+            "发布时间": "2023-01-02T10:00:00.000000",
+            "商品状态": "PendingReview",
+            "发布者用户名": "user2",
             "商品类别": "Electronics",
-            "主图URL": "/uploads/sony.jpg",
+            "主图URL": "http://example.com/old_laptop.jpg",
             "images": [],
             "总商品数": 2 # Use fixed value
         },
         {
-            "商品ID": mock_products_all[1]["商品ID"],
-            "商品名称": "Samsung Galaxy S21",
-            "商品描述": "Android smartphone",
-            "库存": 20,
-            "价格": 5999.00,
-            "发布时间": "2023-01-01T10:00:00.000000", # Use fixed value
+            "商品ID": mock_products_all[0]["商品ID"],
+            "商品名称": "测试手机",
+            "商品描述": "一个很棒的测试手机",
+            "库存": 50,
+            "价格": 5999.0,
+            "发布时间": "2023-01-01T10:00:00.000000",
             "商品状态": "Active",
-            "发布者用户名": "seller2",
+            "发布者用户名": "user1",
             "商品类别": "Electronics",
-            "主图URL": "/uploads/galaxy.jpg",
-            "images": [],
+            "主图URL": "http://example.com/test_phone.jpg",
+            "images": [
+                {"image_url": "http://example.com/test_phone_1.jpg", "sort_order": 0, "upload_time": mock_products_all[0]["images"][0]["upload_time"]},
+                {"image_url": "http://example.com/test_phone_2.jpg", "sort_order": 1, "upload_time": mock_products_all[0]["images"][1]["upload_time"]}
+            ],
             "总商品数": 2 # Use fixed value
         }
     ]
     assert response1.json() == expected_products_1
     mock_product_service.get_product_list.assert_any_call(
         ANY,
-        1, # category_id (int)
+        "Electronics", # category_id (string)
         None, # status
         None, # keyword
         1000.00, # min_price
@@ -1505,7 +1640,7 @@ async def test_get_product_list_filter_pagination_sorting_combinations(client: T
     # Test case 2: Filter by Status and Keyword, Paginate and Sort by PostTime DESC
     response2 = client.get("/api/v1/products", params={
         "status": "Active",
-        "keyword": "mouse",
+        "keyword": "手机",
         "page_number": 1,
         "page_size": 1,
         "order_by": "PostTime",
@@ -1517,17 +1652,20 @@ async def test_get_product_list_filter_pagination_sorting_combinations(client: T
         # Original: Logitech MX Master 3 (Active, 'mouse' in name)
         # Filtered & Sorted:
         {
-            "商品ID": mock_products_all[2]["商品ID"],
-            "商品名称": "Logitech MX Master 3",
-            "商品描述": "Advanced wireless mouse",
-            "库存": 25,
-            "价格": 599.00,
-            "发布时间": "2023-01-07T10:00:00.000000", # Use fixed value
+            "商品ID": mock_products_all[0]["商品ID"],
+            "商品名称": "测试手机",
+            "商品描述": "一个很棒的测试手机",
+            "库存": 50,
+            "价格": 5999.0,
+            "发布时间": "2023-01-01T10:00:00.000000",
             "商品状态": "Active",
-            "发布者用户名": "seller1",
+            "发布者用户名": "user1",
             "商品类别": "Electronics",
-            "主图URL": "/uploads/logitech.jpg",
-            "images": [],
+            "主图URL": "http://example.com/test_phone.jpg",
+            "images": [
+                {"image_url": "http://example.com/test_phone_1.jpg", "sort_order": 0, "upload_time": mock_products_all[0]["images"][0]["upload_time"]},
+                {"image_url": "http://example.com/test_phone_2.jpg", "sort_order": 1, "upload_time": mock_products_all[0]["images"][1]["upload_time"]}
+            ],
             "总商品数": 1 # Use fixed value
         }
     ]
@@ -1536,7 +1674,7 @@ async def test_get_product_list_filter_pagination_sorting_combinations(client: T
         ANY,
         None, # category_id
         "Active", # status
-        "mouse", # keyword
+        "手机", # keyword
         None, None, # min_price, max_price
         "PostTime", # order_by
         1, # page_number
@@ -1545,25 +1683,25 @@ async def test_get_product_list_filter_pagination_sorting_combinations(client: T
 
     # Test case 3: Filter by Category and Status, and Keyword
     response3 = client.get("/api/v1/products", params={
-        "category_id": 2, # Changed to category_id (int)
+        "category_name": "Accessories", # Changed to category_name (string)
         "status": "Active",
-        "keyword": "gatsby"
+        "keyword": "键盘"
     })
     assert response3.status_code == status.HTTP_200_OK
     expected_products_3 = [
         # After filtering for Books, Active, keyword='gatsby':
         # Original: The Great Gatsby (Books, Active, 'gatsby' in name)
         {
-            "商品ID": mock_products_all[3]["商品ID"],
-            "商品名称": "The Great Gatsby",
-            "商品描述": "Classic novel by F. Scott Fitzgerald",
-            "库存": 30,
-            "价格": 68.00,
-            "发布时间": "2023-01-09T10:00:00.000000", # Use fixed value
+            "商品ID": mock_products_all[2]["商品ID"],
+            "商品名称": "机械键盘",
+            "商品描述": "手感极佳的机械键盘。",
+            "库存": 20,
+            "价格": 450.0,
+            "发布时间": "2023-01-03T10:00:00.000000",
             "商品状态": "Active",
-            "发布者用户名": "seller3",
-            "商品类别": "Books",
-            "主图URL": "/uploads/gatsby.jpg",
+            "发布者用户名": "user1",
+            "商品类别": "Accessories",
+            "主图URL": "http://example.com/keyboard.jpg",
             "images": [],
             "总商品数": 1 # Use fixed value
         }
@@ -1571,9 +1709,9 @@ async def test_get_product_list_filter_pagination_sorting_combinations(client: T
     assert response3.json() == expected_products_3
     mock_product_service.get_product_list.assert_any_call(
         ANY,
-        2, # category_id (int)
+        "Accessories", # category_id (string)
         "Active", # status
-        "gatsby", # keyword
+        "键盘", # keyword
         None, None, # min_price, max_price
         'PostTime', 1, 10
     )
