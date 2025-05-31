@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Path, Body, Query
+from fastapi import APIRouter, Depends, HTTPException, Path, Body, Query
 from typing import List
 import pyodbc
 import uuid # For User ID and Order ID
@@ -15,7 +15,7 @@ from app.exceptions import IntegrityError, ForbiddenError, NotFoundError, DALErr
 
 router = APIRouter()
 
-@router.post("/", response_model=OrderResponseSchema, status_code=status.HTTP_201_CREATED)
+@router.post("/", response_model=OrderResponseSchema, status_code=fastapi.status.HTTP_201_CREATED)
 async def create_new_order(
     order_data: OrderCreateSchema,
     current_user: dict = Depends(get_current_user),
@@ -28,7 +28,7 @@ async def create_new_order(
     """
     user_id_str = current_user.get("user_id")
     if not user_id_str:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="无法获取当前用户信息")
+        raise HTTPException(status_code=fastapi.status.HTTP_401_UNAUTHORIZED, detail="无法获取当前用户信息")
     
     try:
         user_id = uuid.UUID(user_id_str) # 将str转换为UUID
@@ -36,18 +36,18 @@ async def create_new_order(
         new_order = await order_service.create_order(conn, order_data, user_id)
         return new_order
     except IntegrityError as e:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+        raise HTTPException(status_code=fastapi.status.HTTP_409_CONFLICT, detail=str(e))
     except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        raise HTTPException(status_code=fastapi.status.HTTP_400_BAD_REQUEST, detail=str(e))
     except ForbiddenError as e:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+        raise HTTPException(status_code=fastapi.status.HTTP_403_FORBIDDEN, detail=str(e))
     except NotFoundError as e:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+        raise HTTPException(status_code=fastapi.status.HTTP_404_NOT_FOUND, detail=str(e))
     except DALError as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"数据库操作失败: {e}")
+        raise HTTPException(status_code=fastapi.status.HTTP_500_INTERNAL_SERVER_ERROR, detail=e.detail if e.detail else str(e))
     except Exception as e:
         # 捕获其他未预期错误
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"服务器内部错误: {e}")
+        raise HTTPException(status_code=fastapi.status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"服务器内部错误: {e}")
 
 @router.put("/{order_id}/status", response_model=OrderResponseSchema)
 async def update_order_status_route(
@@ -64,7 +64,7 @@ async def update_order_status_route(
     """
     user_id_str = current_user.get("user_id")
     if not user_id_str:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="无法获取当前用户信息")
+        raise HTTPException(status_code=fastapi.status.HTTP_401_UNAUTHORIZED, detail="无法获取当前用户信息")
 
     try:
         user_id = uuid.UUID(user_id_str)
@@ -77,17 +77,17 @@ async def update_order_status_route(
         )
         return updated_order
     except IntegrityError as e:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+        raise HTTPException(status_code=fastapi.status.HTTP_409_CONFLICT, detail=str(e))
     except ValueError as e: # 例如，无效的状态转换
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        raise HTTPException(status_code=fastapi.status.HTTP_400_BAD_REQUEST, detail=str(e))
     except ForbiddenError as e: # 用户无权修改此订单状态
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+        raise HTTPException(status_code=fastapi.status.HTTP_403_FORBIDDEN, detail=str(e))
     except NotFoundError as e: # 订单未找到
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+        raise HTTPException(status_code=fastapi.status.HTTP_404_NOT_FOUND, detail=str(e))
     except DALError as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"数据库操作失败: {e}")
+        raise HTTPException(status_code=fastapi.status.HTTP_500_INTERNAL_SERVER_ERROR, detail=e.detail if e.detail else str(e))
     except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"服务器内部错误: {e}")
+        raise HTTPException(status_code=fastapi.status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"服务器内部错误: {e}")
 
 @router.get("/mine", response_model=List[OrderResponseSchema])
 async def get_my_orders(
@@ -104,7 +104,7 @@ async def get_my_orders(
     """
     user_id_str = current_user.get("user_id")
     if not user_id_str:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="无法获取当前用户信息")
+        raise HTTPException(status_code=fastapi.status.HTTP_401_UNAUTHORIZED, detail="无法获取当前用户信息")
 
     try:
         user_id = uuid.UUID(user_id_str)
@@ -112,11 +112,11 @@ async def get_my_orders(
         orders = await order_service.get_orders_by_user(conn, user_id, is_seller=False, status=status, page_number=page_number, page_size=page_size)
         return orders
     except NotFoundError as e: # 虽然通常返回空列表，但以防service层抛出
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+        raise HTTPException(status_code=fastapi.status.HTTP_404_NOT_FOUND, detail=str(e))
     except DALError as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"数据库操作失败: {e}")
+        raise HTTPException(status_code=fastapi.status.HTTP_500_INTERNAL_SERVER_ERROR, detail=e.detail if e.detail else str(e))
     except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"服务器内部错误: {e}")
+        raise HTTPException(status_code=fastapi.status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"服务器内部错误: {e}")
 
 @router.get("/{order_id}", response_model=OrderResponseSchema) # Added GET for single order retrieval
 async def get_order_by_id_route(
@@ -130,7 +130,7 @@ async def get_order_by_id_route(
     """
     user_id_str = current_user.get("user_id")
     if not user_id_str:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="无法获取当前用户信息")
+        raise HTTPException(status_code=fastapi.status.HTTP_401_UNAUTHORIZED, detail="无法获取当前用户信息")
 
     try:
         user_id = uuid.UUID(user_id_str)
@@ -139,20 +139,20 @@ async def get_order_by_id_route(
             raise NotFoundError("订单未找到")
         return order
     except ForbiddenError as e:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+        raise HTTPException(status_code=fastapi.status.HTTP_403_FORBIDDEN, detail=str(e))
     except NotFoundError as e:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+        raise HTTPException(status_code=fastapi.status.HTTP_404_NOT_FOUND, detail=str(e))
     except DALError as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"数据库操作失败: {e}")
+        raise HTTPException(status_code=fastapi.status.HTTP_500_INTERNAL_SERVER_ERROR, detail=e.detail if e.detail else str(e))
     except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"服务器内部错误: {e}")
+        raise HTTPException(status_code=fastapi.status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"服务器内部错误: {e}")
 
 # TODO: 根据《职责划分》，开发者C还负责 Evaluation (评价) 表相关的API。
 # 您可能需要在此文件中添加评价相关的路由，或者创建一个新的 `evaluation_router.py`。
 # 例如: POST /orders/{order_id}/evaluations/ , GET /products/{product_id}/evaluations/
 
 
-@router.delete("/{order_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{order_id}", status_code=fastapi.status.HTTP_204_NO_CONTENT)
 async def delete_order_route(
     order_id: uuid.UUID = Path(..., title="The ID of the order to delete"),
     current_user: dict = Depends(get_current_user),
@@ -166,7 +166,7 @@ async def delete_order_route(
     """
     user_id_str = current_user.get("user_id")
     if not user_id_str:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="无法获取当前用户信息")
+        raise HTTPException(status_code=fastapi.status.HTTP_401_UNAUTHORIZED, detail="无法获取当前用户信息")
 
     try:
         user_id = uuid.UUID(user_id_str)
@@ -174,19 +174,19 @@ async def delete_order_route(
         # 成功删除通常返回 204 No Content
         return
     except ForbiddenError as e:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+        raise HTTPException(status_code=fastapi.status.HTTP_403_FORBIDDEN, detail=str(e))
     except NotFoundError as e:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+        raise HTTPException(status_code=fastapi.status.HTTP_404_NOT_FOUND, detail=str(e))
     except ValueError as e: # 例如，订单状态不允许删除
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        raise HTTPException(status_code=fastapi.status.HTTP_400_BAD_REQUEST, detail=str(e))
     except IntegrityError as e: # Add IntegrityError handling
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+        raise HTTPException(status_code=fastapi.status.HTTP_409_CONFLICT, detail=str(e))
     except DALError as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"数据库操作失败: {e}")
+        raise HTTPException(status_code=fastapi.status.HTTP_500_INTERNAL_SERVER_ERROR, detail=e.detail if e.detail else str(e))
     except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"服务器内部错误: {e}")
+        raise HTTPException(status_code=fastapi.status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"服务器内部错误: {e}")
 
-@router.post("/{order_id}/cancel", status_code=status.HTTP_204_NO_CONTENT)
+@router.post("/{order_id}/cancel", status_code=fastapi.status.HTTP_204_NO_CONTENT)
 async def cancel_order_route(
     cancel_reason_data: dict, # Assuming a simple dict for reason
     order_id: uuid.UUID = Path(..., title="The ID of the order to cancel"),
@@ -201,11 +201,11 @@ async def cancel_order_route(
     """
     user_id_str = current_user.get("user_id")
     if not user_id_str:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="无法获取当前用户信息")
+        raise HTTPException(status_code=fastapi.status.HTTP_401_UNAUTHORIZED, detail="无法获取当前用户信息")
 
     cancel_reason = cancel_reason_data.get("cancel_reason")
     if not cancel_reason:
-         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="取消原因不能为空")
+         raise HTTPException(status_code=fastapi.status.HTTP_400_BAD_REQUEST, detail="取消原因不能为空")
 
     try:
         user_id = uuid.UUID(user_id_str)
@@ -213,18 +213,18 @@ async def cancel_order_route(
         # 成功取消通常返回 204 No Content
         return
     except ForbiddenError as e:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+        raise HTTPException(status_code=fastapi.status.HTTP_403_FORBIDDEN, detail=str(e))
     except NotFoundError as e:
         # Note: The test expects a specific detail message for 404, need to ensure consistency
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+        raise HTTPException(status_code=fastapi.status.HTTP_404_NOT_FOUND, detail=str(e))
     except ValueError as e: # 例如，订单状态不允许取消
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        raise HTTPException(status_code=fastapi.status.HTTP_400_BAD_REQUEST, detail=str(e))
     except IntegrityError as e: # Add IntegrityError handling
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+        raise HTTPException(status_code=fastapi.status.HTTP_409_CONFLICT, detail=str(e))
     except DALError as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"数据库操作失败: {e}")
+        raise HTTPException(status_code=fastapi.status.HTTP_500_INTERNAL_SERVER_ERROR, detail=e.detail if e.detail else str(e))
     except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"服务器内部错误: {e}")
+        raise HTTPException(status_code=fastapi.status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"服务器内部错误: {e}")
 
 @router.put("/{order_id}/confirm", response_model=OrderResponseSchema)
 async def confirm_order_route(
@@ -238,24 +238,24 @@ async def confirm_order_route(
     """
     user_id_str = current_user.get("user_id")
     if not user_id_str:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="无法获取当前用户信息")
+        raise HTTPException(status_code=fastapi.status.HTTP_401_UNAUTHORIZED, detail="无法获取当前用户信息")
     
     try:
         user_id = uuid.UUID(user_id_str)
         updated_order = await order_service.confirm_order(conn, order_id, user_id)
         return updated_order
     except IntegrityError as e:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+        raise HTTPException(status_code=fastapi.status.HTTP_409_CONFLICT, detail=str(e))
     except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        raise HTTPException(status_code=fastapi.status.HTTP_400_BAD_REQUEST, detail=str(e))
     except ForbiddenError as e:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+        raise HTTPException(status_code=fastapi.status.HTTP_403_FORBIDDEN, detail=str(e))
     except NotFoundError as e:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+        raise HTTPException(status_code=fastapi.status.HTTP_404_NOT_FOUND, detail=str(e))
     except DALError as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"数据库操作失败: {e}")
+        raise HTTPException(status_code=fastapi.status.HTTP_500_INTERNAL_SERVER_ERROR, detail=e.detail if e.detail else str(e))
     except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"服务器内部错误: {e}")
+        raise HTTPException(status_code=fastapi.status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"服务器内部错误: {e}")
 
 
 @router.put("/{order_id}/complete", response_model=OrderResponseSchema)
@@ -270,24 +270,24 @@ async def complete_order_route(
     """
     user_id_str = current_user.get("user_id")
     if not user_id_str:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="无法获取当前用户信息")
+        raise HTTPException(status_code=fastapi.status.HTTP_401_UNAUTHORIZED, detail="无法获取当前用户信息")
 
     try:
         user_id = uuid.UUID(user_id_str)
         updated_order = await order_service.complete_order(conn, order_id, user_id)
         return updated_order
     except IntegrityError as e:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+        raise HTTPException(status_code=fastapi.status.HTTP_409_CONFLICT, detail=str(e))
     except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        raise HTTPException(status_code=fastapi.status.HTTP_400_BAD_REQUEST, detail=str(e))
     except ForbiddenError as e:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+        raise HTTPException(status_code=fastapi.status.HTTP_403_FORBIDDEN, detail=str(e))
     except NotFoundError as e:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+        raise HTTPException(status_code=fastapi.status.HTTP_404_NOT_FOUND, detail=str(e))
     except DALError as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"数据库操作失败: {e}")
+        raise HTTPException(status_code=fastapi.status.HTTP_500_INTERNAL_SERVER_ERROR, detail=e.detail if e.detail else str(e))
     except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"服务器内部错误: {e}")
+        raise HTTPException(status_code=fastapi.status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"服务器内部错误: {e}")
 
 
 @router.put("/{order_id}/reject", response_model=OrderResponseSchema)
@@ -303,25 +303,25 @@ async def reject_order_route(
     """
     user_id_str = current_user.get("user_id")
     if not user_id_str:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="无法获取当前用户信息")
+        raise HTTPException(status_code=fastapi.status.HTTP_401_UNAUTHORIZED, detail="无法获取当前用户信息")
 
     rejection_reason = rejection_reason_data.get("rejection_reason")
     if not rejection_reason:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="拒绝原因不能为空")
+        raise HTTPException(status_code=fastapi.status.HTTP_400_BAD_REQUEST, detail="拒绝原因不能为空")
 
     try:
         user_id = uuid.UUID(user_id_str)
         updated_order = await order_service.reject_order(conn, order_id, user_id, rejection_reason)
         return updated_order
     except IntegrityError as e:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+        raise HTTPException(status_code=fastapi.status.HTTP_409_CONFLICT, detail=str(e))
     except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        raise HTTPException(status_code=fastapi.status.HTTP_400_BAD_REQUEST, detail=str(e))
     except ForbiddenError as e:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+        raise HTTPException(status_code=fastapi.status.HTTP_403_FORBIDDEN, detail=str(e))
     except NotFoundError as e:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+        raise HTTPException(status_code=fastapi.status.HTTP_404_NOT_FOUND, detail=str(e))
     except DALError as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"数据库操作失败: {e}")
+        raise HTTPException(status_code=fastapi.status.HTTP_500_INTERNAL_SERVER_ERROR, detail=e.detail if e.detail else str(e))
     except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"服务器内部错误: {e}")
+        raise HTTPException(status_code=fastapi.status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"服务器内部错误: {e}")

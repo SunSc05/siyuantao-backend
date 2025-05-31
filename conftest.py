@@ -5,18 +5,20 @@ from app.main import app
 import pyodbc
 import asyncio
 from uuid import uuid4 # 导入 uuid4
-from app.dependencies import get_current_user, get_db_connection, get_order_service, get_evaluation_service # 导入需要的依赖项
+from app.dependencies import get_current_user, get_db_connection, get_order_service, get_evaluation_service, get_current_active_admin_user # 导入需要的依赖项
 from unittest.mock import MagicMock # 导入 MagicMock
 from app.services.order_service import OrderService # Import OrderService for type hinting
 from app.services.evaluation_service import EvaluationService # Import EvaluationService for type hinting
 from unittest.mock import AsyncMock
 import pytest_mock # Import pytest_mock
-from fastapi import Depends
+from fastapi import Depends, status
 from app.dependencies import get_user_service as get_user_service_dependency
 from app.services.user_service import UserService # Import UserService
 from app.config import Settings # Import Settings class
 import os # Import os for patching environment variables
 from uuid import UUID
+from datetime import datetime, timezone
+from typing import Optional
 
 # 定义模拟用户 ID
 TEST_USER_ID = UUID("a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11") # 示例用户ID
@@ -71,38 +73,50 @@ def mock_evaluation_service(mocker: pytest_mock.MockerFixture) -> AsyncMock:
 @pytest.fixture(scope="function") # Changed scope to function for better test isolation
 # 将异步 fixture 改为同步，并返回 TestClient
 # Accept mock_order_service fixture
-def client(mock_order_service: AsyncMock, mock_evaluation_service: AsyncMock, mock_db_connection: MagicMock, mocker: pytest_mock.MockerFixture): # Add mock_evaluation_service, mock_db_connection
+def client(mock_order_service: AsyncMock, mock_evaluation_service: AsyncMock, mock_db_connection: MagicMock, mocker: pytest_mock.MockerFixture):
+    from app.main import app # Import the main app instance
+    from app.dependencies import get_current_user, get_db_connection, get_order_service, get_evaluation_service # Import dependencies
+
     # Override dependencies before creating the client
+    app.dependency_overrides[get_db_connection] = lambda: mock_db_connection
+    app.dependency_overrides[get_order_service] = lambda: mock_order_service
+    app.dependency_overrides[get_evaluation_service] = lambda: mock_evaluation_service
 
-    # No need to patch app.config.settings here, it's handled globally by mock_global_settings_class
-
-    # Override get_db_connection
-    async def override_get_db_connection_async():
-        # Return a mock connection object
-        return mock_db_connection # Use the shared mock_db_connection fixture
-
-    # Override get_order_service
-    async def mock_get_order_service():
-        return mock_order_service
-
-    # Override get_evaluation_service
-    async def mock_get_evaluation_service():
-        return mock_evaluation_service
-
-    # Mock get_current_user to return a fixed test user
+    # Mock get_current_user to return a dummy user for authentication
+    # This user ID can be used in tests to assert ownership/permissions
+    test_user_id = uuid4()
     async def mock_get_current_user_override():
-        # This will be the 'current_user' in the router
-        # Return a dict that matches the expected payload structure
-        # Use a consistent test user ID (UUID)
-        return {"user_id": str(client.test_user_id), "is_staff": False, "is_verified": True}
+        return {"user_id": str(test_user_id), "is_staff": False, "is_verified": True} # Return a dict that matches the expected payload structure
 
-    app.dependency_overrides[get_db_connection] = override_get_db_connection_async
-    app.dependency_overrides[get_order_service] = mock_get_order_service
-    app.dependency_overrides[get_evaluation_service] = mock_get_evaluation_service
     app.dependency_overrides[get_current_user] = mock_get_current_user_override
 
-    # Create the TestClient with overridden dependencies
-    with TestClient(app) as client:
-        client.test_user_id = uuid4() # Assign a test user ID to the client instance
-        yield client
-    app.dependency_overrides.clear() # Clean up overrides after test
+    # Mock get_current_active_admin_user for admin-specific tests
+    test_admin_user_id = uuid4()
+    async def mock_get_current_active_admin_user_override():
+        return {"user_id": str(test_admin_user_id), "is_staff": True, "is_verified": True} # Return a dict that matches the expected payload structure for an admin
+
+    app.dependency_overrides[get_current_active_admin_user] = mock_get_current_active_admin_user_override
+
+    # Mock the status module directly if it's causing issues
+    # This is a bit of a hack, but can help if the import within the router isn't behaving as expected in tests
+    # mocker.patch('app.routers.order.status', status) # Removed
+    # mocker.patch('app.routers.users.status', status) # Removed
+    # mocker.patch('app.routers.auth.status', status) # Removed
+
+    # Create TestClient after all dependencies are overridden
+    test_client = TestClient(app)
+    test_client.test_user_id = test_user_id # Attach test_user_id to the client instance
+    test_client.test_admin_user_id = test_admin_user_id # Attach test_admin_user_id to the client instance
+
+    yield test_client # Provide the TestClient instance to the tests
+
+    # Clean up dependencies after the test
+    app.dependency_overrides = {}
+
+@pytest.fixture(scope="function")
+def mock_db_connection(mocker: pytest_mock.MockerFixture) -> MagicMock:
+    """Mock the pyodbc.Connection dependency."""
+    mock_conn = MagicMock(spec=pyodbc.Connection)
+    # Add a mock commit method that does nothing
+    mock_conn.commit = MagicMock()
+    return mock_conn

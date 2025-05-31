@@ -3,14 +3,18 @@ from fastapi import HTTPException, status, Request
 from fastapi.responses import JSONResponse
 
 class DALError(Exception):
-    """Base exception for Data Access Layer errors."""
+    """
+    Custom exception for Data Access Layer errors.
+    """
     def __init__(self, message="Database operation failed", detail=None):
+        super().__init__(message)
         self.message = message
-        self.detail = detail
-        super().__init__(self.message)
+        self.detail = detail if detail is not None else message # Ensure detail is not None
 
 class NotFoundError(DALError):
-    """Raised when a specific resource is not found in the database."""
+    """
+    Custom exception for resource not found errors within the DAL.
+    """
     def __init__(self, message="Resource not found"):
         super().__init__(message)
 
