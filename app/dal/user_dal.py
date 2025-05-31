@@ -370,7 +370,7 @@ class UserDAL:
                  if error_message:
                      logger.warning(
                          f"DAL: Password update failed for ID {user_id}: SP returned error: {error_message}")
-                     if ('用户不存在。' in error_message or 'User not found.' in error_message) and result_code == -1: # Check code as well
+                     if '用户未找到。' in error_message and result_code == -1: # Check code as well
                           raise NotFoundError(
                               f"User with ID {user_id} not found for password update.")
                      elif '密码更新失败。' in error_message or 'Password update failed.' in error_message: # Add a specific code check if SP provides one
@@ -849,7 +849,7 @@ class UserDAL:
                  # Check for known error messages first
                  if error_message:
                       logger.warning(f"DAL: sp_AdjustUserCredit for user {user_id}, admin {admin_id}: SP returned message: {error_message}") # Log as message
-                      if '用户不存在。' in error_message or 'User not found.' in error_message:
+                      if '用户未找到。' in error_message:
                            raise NotFoundError(f"User with ID {user_id} not found for credit adjustment.") # More specific message
                       if '无权限执行此操作' in error_message or 'Only administrators can adjust user credit.' in error_message:
                             raise ForbiddenError("只有管理员可以调整用户信用分。")
@@ -904,7 +904,7 @@ class UserDAL:
                       error_message = result.get('') or result.get('Error') or result.get('Message')
                       if error_message:
                            logger.warning(f"DAL: sp_GetAllUsers failed for admin {admin_id}: SP returned error: {error_message}")
-                           if ("无权限执行此操作" in error_message or "Only administrators can view all users" in error_message) and result.get('OperationResultCode') == -2: # Check code for forbidden
+                           if "只有超级管理员可以查看所有用户。" in error_message and result.get('OperationResultCode') == -2: # Check code for forbidden
                                  raise ForbiddenError(error_message) # 将数据库权限错误转换为应用层异常
                            if "管理员不存在" in error_message or "Admin user not found" in error_message:
                                  raise NotFoundError(error_message) # 管理员不存在也算一种"无权限"

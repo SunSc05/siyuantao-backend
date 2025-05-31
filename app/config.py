@@ -4,13 +4,28 @@ import os
 from pydantic import EmailStr, HttpUrl, Field, validator # Import necessary types and Field, validator
 from typing import Optional # Import Optional
 from pydantic import model_validator
+# import logging # Import logging
+
+# logger = logging.getLogger(__name__) # Get logger instance
 
 class Settings(BaseSettings):
     DATABASE_SERVER: str
     DATABASE_NAME: str
     DATABASE_UID: str
     DATABASE_PWD: str
-    
+    ODBC_DRIVER: str = Field("ODBC Driver 17 for SQL Server", description="ODBC Driver for SQL Server") # New: ODBC Driver
+
+    # Database Connection Pool Settings
+    DATABASE_POOL_MIN: int = Field(5, description="最小连接数")
+    DATABASE_POOL_MAX_IDLE: int = Field(10, description="最大空闲连接数")
+    DATABASE_POOL_MAX_TOTAL: int = Field(20, description="最大总连接数")
+    DATABASE_POOL_BLOCKING: bool = Field(True, description="连接池满时是否阻塞等待")
+
+    # Parameters for pyodbc.connect to be passed directly
+    # This allows flexibility for various connection string options
+    PYODBC_PARAMS: dict = Field(default_factory=lambda: {},
+        description="Additional parameters for pyodbc.connect as a dictionary")
+
     # Add JWT settings
     SECRET_KEY: str
     ALGORITHM: str = "HS256"
@@ -68,16 +83,8 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(env_file='.env', extra='ignore') # Ensure .env is loaded
 
+# import os # Import os to get current working directory
+# logger.info(f"Current working directory before loading settings: {os.getcwd()}") # Add this line
 settings = Settings()
 
-def get_connection_string():
-    # 根据您的 SQL Server ODBC 驱动版本和操作系统调整
-    # Windows: DRIVER={ODBC Driver 17 for SQL Server};
-    # Linux:   DRIVER={ODBC Driver 17 for SQL Server};
-    return (
-        f"DRIVER={{ODBC Driver 17 for SQL Server}};"
-        f"SERVER={settings.DATABASE_SERVER};"
-        f"DATABASE={settings.DATABASE_NAME};"
-        f"UID={settings.DATABASE_UID};"
-        f"PWD={settings.DATABASE_PWD}"
-    ) 
+# Removed: get_connection_string function will be replaced by connection pool logic 

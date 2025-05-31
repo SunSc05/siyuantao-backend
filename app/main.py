@@ -22,14 +22,9 @@ try:
 except ImportError:
     uvicorn = None # Handle case where uvicorn might not be installed in this env
 
-# 导入所有模块路由
-from app.routers import users, auth # 暂时只导入已存在的路由
-from app.routers import users, auth, order # 暂时只导入已存在的路由
-from app.routers import evaluation # 新增：导入评价路由
-from app.routers import product_routes  # 添加商品路由
-# from app.routers import  orders # 这些文件后面会创建
-from app.routers import upload_routes # 导入图片上传路由
-# from app.routers import products, orders # 这些文件后面会创建
+# Import all module routes
+from app.routers import users, auth, order, evaluation, product_routes, upload_routes
+# from app.core.db import initialize_db_pool, close_db_pool # Commented out connection pool functions
 
 # Define a comprehensive logging configuration dictionary
 LOGGING_CONFIG = {
@@ -169,10 +164,14 @@ async def root():
 # 您可以添加一些启动和关闭事件 (例如，初始化数据库连接池)
 @app.on_event("startup")
 async def startup_event():
-    logger.info("Application startup...") # Changed from print to logger
-    # 可以在这里做一些数据库连接池初始化等操作
+    logger.info("Application startup...")
+    # # Initialize database connection pool
+    # initialize_db_pool()
+    # logger.info("Database connection pool initialized.")
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    logger.info("Application shutdown...") # Changed from print to logger
-    # 可以在这里关闭数据库连接池等
+    logger.info("Application shutdown...")
+    # # Close database connection pool
+    # close_db_pool()
+    # logger.info("Database connection pool closed.")

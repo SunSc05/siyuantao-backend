@@ -1,6 +1,6 @@
 from pydantic import BaseModel, Field, EmailStr
 from uuid import UUID
-from typing import Optional
+from typing import Optional, Literal
 from datetime import datetime # Import datetime for UserResponseSchema
 
 # Properties to receive via API on creation (e.g., for registration)
@@ -83,8 +83,8 @@ class VerifyEmail(BaseModel):
 # New Schemas for Admin User Management
 
 class UserStatusUpdateSchema(BaseModel):
-    status: str = Field(..., description="新的用户状态 ('Active' 或 'Disabled')")
+    status: Literal['Active', 'Disabled'] = Field(..., description="新的用户状态 ('Active' 或 'Disabled')")
 
 class UserCreditAdjustmentSchema(BaseModel):
-    credit_adjustment: int = Field(..., description="信用分调整值 (正数增加，负数减少)")
+    credit_adjustment: int = Field(..., ge=-1000, le=1000, description="信用分调整值 (正数增加，负数减少)")
     reason: str = Field(..., description="调整信用分的原因") 

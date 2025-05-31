@@ -109,16 +109,17 @@ async def request_verification_email_api(
     """
     try:
         # Call Service layer function, passing the connection
-        await user_service.request_verification_email(conn, request_data.email)
+        # The service returns a dict, so we need to capture it if we want to use its message
+        result = await user_service.request_verification_email(conn, request_data.email)
         # The service/DAL handles the logic and potential errors (like disabled account)
         # If it reaches here without raising an exception, we assume the request was processed.
         # Returning a generic success message is good practice to prevent email enumeration.
-        return {"message": "如果邮箱存在或已注册，验证邮件已发送。请检查您的收件箱。"}
+        return {"message": result.get("message", "如果邮箱存在或已注册，验证邮件已发送。请检查您的收件箱。")}
     except DALError as e:
         # Catch specific DAL errors from Service
         # For disabled account error specifically:
         if "账户已被禁用" in str(e):
-             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"请求验证邮件失败: {e}")
+             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"邮箱验证失败: {e}") # Change to 403 Forbidden
         # Handle other potential DAL errors as 500 or another appropriate status
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"数据库操作失败: {e}")
     except (AuthenticationError, ForbiddenError) as e:
@@ -161,6 +162,9 @@ async def verify_email_api(
         # Handle other potential DAL errors as 500 or another appropriate status
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"数据库操作失败: {e}")
     except (AuthenticationError, ForbiddenError) as e:
+        # For ForbiddenError (e.g., '账户已被禁用。'), raise with its own message directly
+        if isinstance(e, ForbiddenError):
+             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED if isinstance(e, AuthenticationError) else status.HTTP_403_FORBIDDEN, detail=str(e))
     except Exception as e:
         # Catch other unexpected errors

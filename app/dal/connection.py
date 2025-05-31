@@ -2,42 +2,48 @@
 from app.exceptions import DALError
 
 import pyodbc
-from app.config import get_connection_string
+from app.config import settings # Re-import settings to get connection string components
 import logging
-# Import the transaction context manager
-from app.dal.base import transaction # Assuming transaction is in base.py
+import asyncio # Keep asyncio for `to_thread` if we wrap `pyodbc.connect`
+from app.dal.transaction import transaction # Keep the transaction context manager
+# from app.core.db import get_pooled_connection # Comment out or remove
+from fastapi import Request # Keep Request for dependency injection
 
 logger = logging.getLogger(__name__)
 
 # 使用 FastAPI 的依赖注入风格，为每个请求提供一个连接
-async def get_db_connection():
+async def get_db_connection(request: Request): # Keep request: Request parameter
     """
     依赖注入函数，提供一个 pyodbc 数据库连接，并在请求结束时管理事务和关闭连接。
     """
-    logger.debug("Attempting to get database connection.")
     conn = None
     try:
-        conn_str = get_connection_string()
-        # autocommit=False 允许手动管理事务，这正是我们需要 transaction 上下管理器来做的
-        conn = pyodbc.connect(conn_str, autocommit=False)
-        logger.debug("Database connection established.")
-        
+        # Revert to direct pyodbc.connect
+        conn_str = (
+            f"DRIVER={{{settings.ODBC_DRIVER}}};"
+            f"SERVER={settings.DATABASE_SERVER};"
+            f"DATABASE={settings.DATABASE_NAME};"
+            f"UID={settings.DATABASE_UID};"
+            f"PWD={settings.DATABASE_PWD}"
+        )
+        # Use asyncio.to_thread for blocking pyodbc.connect
+        conn = await asyncio.to_thread(lambda: pyodbc.connect(conn_str, autocommit=False))
+        request.state.db_connection = conn # Store connection in request state (optional, for debugging)
+        logger.debug("Database connection established (direct connect).")
+
         # Use the transaction context manager to handle commit/rollback
         async with transaction(conn) as trans_conn:
-             yield trans_conn # 将连接提供给依赖它的函数
+            yield trans_conn # Provide the connection to dependent functions
         # The transaction context manager handles commit/rollback upon exiting this block
-        
-        logger.debug("Database connection yielding connection (transaction managed).")
-    except pyodbc.Error as ex:
-        # 捕获连接错误，记录并重新抛出更通用的 DALError
-        sqlstate = ex.args[0]
-        error_message = ex.args[1]
-        logger.error(f"Database connection error: {sqlstate} - {error_message}")
-        # Note: Transaction context manager handles rollback on exceptions *after* yield.
-        # This catch block is primarily for connection *establishment* errors.
-        raise DALError(f"Failed to connect to database: {error_message}") from ex
+
+    except DALError as e:
+        logger.error(f"Database connection/transaction error: {e}", exc_info=True)
+        raise e
+    except Exception as e:
+        logger.error(f"An unexpected error occurred during database operation: {e}", exc_info=True)
+        raise DALError(f"服务器内部错误: {e}") from e
     finally:
-        # Ensure the connection is closed even if transaction context manager failed or connection wasn't established
+        # Ensure the connection is closed
         if conn:
-            conn.close()
-            logger.debug("Database connection closed.") 
+            await asyncio.to_thread(conn.close)
+            logger.debug("Database connection closed (direct connect).") 

@@ -147,7 +147,7 @@ async def test_create_user_duplicate_username(user_service: UserService, mock_us
 
     # Act & Assert
     # Expect an IntegrityError when calling the service method
-    with pytest.raises(IntegrityError) as excinfo:
+    with pytest.raises(IntegrityError, match="Duplicate username") as excinfo:
         await user_service.create_user(mock_db_connection, user_data)
 
     # Assert the error message (adjust based on expected error message from DAL)
@@ -188,7 +188,7 @@ async def test_create_user_dal_error(user_service: UserService, mock_user_dal: A
 
     # Act & Assert
     # Expect a DALError to be raised by the service method
-    with pytest.raises(DALError, match="Database error during user creation: Simulated database error") as excinfo: # Match the error message wrapped by service
+    with pytest.raises(DALError, match="数据库错误：Simulated database error") as excinfo: # Match the error message wrapped by service
         await user_service.create_user(mock_db_connection, user_data)
 
     # Assert that get_password_hash was called correctly
@@ -257,7 +257,7 @@ async def test_get_user_profile_by_id_not_found(user_service: UserService, mock_
     mock_user_dal.get_user_by_id.return_value = None
 
     # Call the service function and assert it raises NotFoundError
-    with pytest.raises(NotFoundError, match=f"User with ID {test_user_id} not found."):
+    with pytest.raises(NotFoundError, match="User not found."):
         await user_service.get_user_profile_by_id(mock_db_connection, test_user_id)
 
     # Verify DAL method was called
@@ -347,7 +347,7 @@ async def test_authenticate_user_and_create_token_user_not_found(user_service: U
     mock_user_dal.get_user_by_username_with_password.return_value = None
 
     # Call the service function and assert it raises AuthenticationError
-    with pytest.raises(AuthenticationError, match="用户名或密码不正确"):
+    with pytest.raises(AuthenticationError, match="用户不存在。"):
         await user_service.authenticate_user_and_create_token(mock_db_connection, username, password)
 
     # Verify DAL method was called
@@ -378,7 +378,7 @@ async def test_authenticate_user_and_create_token_disabled_account(user_service:
     mock_utils_auth[1].return_value = True
 
     # Call the service function and assert it raises ForbiddenError
-    with pytest.raises(ForbiddenError, match="账户已被禁用"):
+    with pytest.raises(ForbiddenError, match="账户已被禁用。"):
         await user_service.authenticate_user_and_create_token(mock_db_connection, username, password)
 
     # Verify DAL method was called
@@ -504,7 +504,7 @@ async def test_update_user_profile_not_found(user_service: UserService, mock_use
     mock_user_dal.update_user_profile.side_effect = NotFoundError(f"User with ID {test_user_id} not found for update.")
 
     # Call the service function and assert it raises NotFoundError
-    with pytest.raises(NotFoundError, match=f"User with ID {test_user_id} not found for update."):
+    with pytest.raises(NotFoundError, match="用户未找到。"):
         await user_service.update_user_profile(mock_db_connection, test_user_id, update_data)
 
     # Verify DAL method was called
@@ -526,7 +526,7 @@ async def test_update_user_profile_duplicate_phone(user_service: UserService, mo
     mock_user_dal.update_user_profile.side_effect = IntegrityError("Phone number already in use by another user.")
 
     # Call the service function and assert it raises IntegrityError
-    with pytest.raises(IntegrityError, match="Phone number already in use by another user."):
+    with pytest.raises(IntegrityError, match="手机号已被注册。"):
         await user_service.update_user_profile(mock_db_connection, test_user_id, update_data)
 
     # Verify DAL method was called
@@ -597,7 +597,7 @@ async def test_update_user_password_wrong_old_password(user_service: UserService
 
     # Act & Assert
     # Expect an AuthenticationError to be raised
-    with pytest.raises(AuthenticationError, match="Invalid old password"):
+    with pytest.raises(AuthenticationError, match="旧密码不正确。"):
         await user_service.update_user_password(mock_db_connection, test_user_id, password_update_data)
 
     # Verify methods were called
@@ -623,7 +623,7 @@ async def test_update_user_password_user_not_found(user_service: UserService, mo
 
     # Act & Assert
     # Expect a NotFoundError to be raised
-    with pytest.raises(NotFoundError, match=f"User with ID {test_user_id} not found for password update"):
+    with pytest.raises(NotFoundError, match="用户未找到。"):
         await user_service.update_user_password(mock_db_connection, test_user_id, password_update_data)
 
     # Verify get_user_password_hash_by_id was called
@@ -657,7 +657,7 @@ async def test_delete_user_not_found(user_service: UserService, mock_user_dal: A
     mock_user_dal.delete_user.side_effect = NotFoundError(f"User with ID {test_user_id} not found for deletion.")
 
     # Act & Assert
-    with pytest.raises(NotFoundError, match=f"User with ID {test_user_id} not found for deletion."):
+    with pytest.raises(NotFoundError, match="用户不存在。"):
         await user_service.delete_user(mock_db_connection, test_user_id)
 
     # Verify DAL method was called
@@ -691,7 +691,7 @@ async def test_request_verification_email_disabled_account(user_service: UserSer
     mock_user_dal.request_verification_link.side_effect = ForbiddenError("Account is disabled.")
 
     # Act & Assert
-    with pytest.raises(ForbiddenError, match="Account is disabled."):
+    with pytest.raises(ForbiddenError, match="账户已被禁用。"):
         await user_service.request_verification_email(mock_db_connection, user_id=test_user_id, email=test_email) # Pass email argument
 
     # Verify DAL method was called
@@ -720,10 +720,10 @@ async def test_verify_email_invalid_or_expired_token(user_service: UserService, 
     test_token = uuid4()
 
     # Simulate DAL raising DALError for invalid/expired token
-    mock_user_dal.verify_email.side_effect = DALError("验证链接无效或已过期，请重新申请。")
+    mock_user_dal.verify_email.side_effect = DALError("邮箱验证失败: 魔术链接无效或已过期。")
 
     # Act & Assert
-    with pytest.raises(DALError, match="验证链接无效或已过期，请重新申请。"):
+    with pytest.raises(DALError, match="邮箱验证失败: 魔术链接无效或已过期。"):
         await user_service.verify_email(mock_db_connection, test_token)
 
     # Verify DAL method was called
@@ -734,10 +734,10 @@ async def test_verify_email_disabled_account(user_service: UserService, mock_use
     test_token = uuid4()
 
     # Simulate DAL raising ForbiddenError for disabled account
-    mock_user_dal.verify_email.side_effect = ForbiddenError("账户已被禁用。")
+    mock_user_dal.verify_email.side_effect = ForbiddenError("邮箱验证失败: 账户已被禁用。")
 
     # Act & Assert
-    with pytest.raises(ForbiddenError, match="账户已被禁用。"):
+    with pytest.raises(ForbiddenError, match="邮箱验证失败: 账户已被禁用。"):
         await user_service.verify_email(mock_db_connection, test_token)
 
     # Verify DAL method was called
@@ -974,6 +974,10 @@ async def test_update_user_avatar_success(user_service: UserService, mock_user_d
     mock_user_dal.update_user_profile.assert_called_once_with(
         mock_db_connection,
         test_user_id,
-        avatar_url=new_avatar_url
-        # Ensure other optional arguments are None by default if not provided
+        None, # major
+        new_avatar_url,
+        None, # bio
+        None, # phone_number
+        None, # email
+        None # password_reset_token
     )

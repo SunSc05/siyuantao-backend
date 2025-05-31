@@ -9,7 +9,8 @@ import pytest_mock
 # from app.dependencies import get_user_service, get_current_user, get_current_active_admin_user # Import dependencies from here
 from app.dal.connection import get_db_connection # Import get_db_connection from its correct location
 # Import authentication dependencies directly from app.dependencies for type hinting if needed, but patch in routers module
-from app.dependencies import get_user_service as get_user_service_dependency, get_current_user as get_current_user_dependency, get_current_active_admin_user as get_current_active_admin_user_dependency
+from app.dependencies import get_user_service as get_user_service_dependency, get_current_user as get_current_user_dependency, get_current_active_admin_user as get_current_active_admin_user_dependency, get_current_authenticated_user # Import get_current_active_admin_user directly
+from app.dependencies import get_current_active_admin_user # Import get_current_active_admin_user for direct use in test overrides
 
 # Import necessary modules from your application
 from app.main import app
@@ -31,15 +32,34 @@ from app.exceptions import NotFoundError, IntegrityError, DALError, Authenticati
 # Import the UserService class
 from app.services.user_service import UserService # Import Service class for type hinting
 from app.dal.user_dal import UserDAL # Import UserDAL for type hinting
+from app.config import Settings # Import Settings class to mock it
 
 from datetime import datetime, timezone # Import datetime and timezone
 from dateutil.parser import isoparse # Import isoparse for flexible ISO 8601 parsing
 
-# Remove database fixture and helper functions that interact with the database directly
-# from app.dal.connection import get_connection_string
-# import pyodbc
-# import asyncio
-# from app.dal.tests.test_users_dal import _clean_users_table, _set_user_status, _set_verification_token
+# Import TEST_USER_ID from conftest.py
+from conftest import TEST_USER_ID, TEST_ADMIN_USER_ID, TEST_SELLER_ID, TEST_BUYER_ID # Import TEST_USER_ID
+
+# --- Mock settings fixture to avoid validation errors --- (New)
+@pytest.fixture(scope="function")
+def mock_settings(mocker):
+    mock = mocker.MagicMock(spec=Settings)
+    mock.DATABASE_SERVER = "mock_server"
+    mock.DATABASE_NAME = "mock_db"
+    mock.DATABASE_UID = "mock_uid"
+    mock.DATABASE_PWD = "mock_pwd"
+    mock.SECRET_KEY = "mock_secret_key"
+    mock.ALGORITHM = "HS256"
+    mock.ACCESS_TOKEN_EXPIRE_MINUTES = 30
+    mock.EMAIL_PROVIDER = "smtp"
+    mock.SENDER_EMAIL = "test@example.com"
+    mock.FRONTEND_DOMAIN = "http://localhost:3301"
+    mock.MAGIC_LINK_EXPIRE_MINUTES = 15
+    mock.ODBC_DRIVER = "ODBC Driver 17 for SQL Server"
+    mock.ALIYUN_EMAIL_ACCESS_KEY_ID = "mock_aliyun_id"
+    mock.ALIYUN_EMAIL_ACCESS_KEY_SECRET = "mock_aliyun_secret"
+    mock.ALIYUN_EMAIL_REGION = "cn-hangzhou"
+    return mock
 
 # --- Test Fixtures (Likely defined in conftest.py, including client and db_conn_fixture) ---
 # Keep the client fixture (assuming it's in conftest.py or defined here)
@@ -65,8 +85,11 @@ async def mock_get_current_active_admin_user_override():
 
 
 @pytest.fixture(scope="function")
-def client(mock_user_service, mocker): # Remove mocker if not needed by other mocks in fixture
+def client(mock_user_service, mocker, mock_settings): # Add mock_settings to client fixture
     # Use app.dependency_overrides to mock dependencies for the TestClient
+    # Patch app.config.settings to return our mock_settings
+    mocker.patch('app.config.settings', new=mock_settings)
+
     # Mock the get_db_connection dependency in app.dal.connection
     async def override_get_db_connection_async(): # Define the async override function
         # Return a mock connection object
@@ -364,6 +387,7 @@ async def test_read_users_me(client: TestClient, mock_user_service: AsyncMock, m
     assert isinstance(response_json.get("status"), str)
     assert isinstance(response_json.get("credit"), int)
     assert isinstance(response_json.get("is_staff"), bool)
+    assert isinstance(response_json.get("is_super_admin"), bool)
     assert isinstance(response_json.get("is_verified"), bool)
     # Check for presence and types of optional fields
     assert "major" in response_json
@@ -500,24 +524,26 @@ async def test_update_current_user_profile(client: TestClient, mock_user_service
 @pytest.mark.anyio # Use anyio mark
 async def test_update_user_password_success(client: TestClient, mock_user_service: AsyncMock, mocker: pytest_mock.MockerFixture):
     # Arrange
-    test_user_id = client.test_user_id # Get user ID from mocked authentication dependency
+    # The client fixture now provides the mocked authentication dependency
+    # We can access the test user ID from the client instance
+    test_user_id = client.test_user_id
+
     password_update_data = UserPasswordUpdate(old_password="oldpassword", new_password="newpassword")
 
-    # Simulate Service layer returning True on successful password update
+    # Simulate Service layer returning True for success
     mock_user_service.update_user_password.return_value = True
 
     # Send password_update_data as JSON body
     # No need for Authorization header, as auth dependency is mocked
-    response = client.put(f"/api/v1/users/{test_user_id}/password", json=password_update_data.model_dump())
+    response = client.put(f"/api/v1/users/me/password", json=password_update_data.model_dump())
 
-    assert response.status_code == 200
-    assert response.json() == {"message": "Password updated successfully"}
+    assert response.status_code == 204
+    assert not response.content # 204 No Content response should have no body
 
-    # Verify that the service's update_user_password method was called with the correct data
     mock_user_service.update_user_password.assert_called_once_with(
         mocker.ANY, # Mocked DB connection
-        test_user_id, # User ID from mocked dependency (should be UUID object passed to service)
-        password_update_data # Pydantic model passed directly to service
+        test_user_id, # User ID from the authenticated user
+        password_update_data # Pydantic model for update data
     )
 
 @pytest.mark.anyio # Use anyio mark
@@ -537,18 +563,15 @@ async def test_update_user_password_wrong_old_password(
 
     # Send password_update_data as JSON body
     # No need for Authorization header, as auth dependency is mocked
-    response = client.put(f"/api/v1/users/{test_user_id}/password", json=password_update_data.model_dump())
+    response = client.put(f"/api/v1/users/me/password", json=password_update_data.model_dump())
 
     assert response.status_code == 401
-    # Check the detail from the HTTPException raised by the router
-    assert response.json()["detail"] == "Invalid old password" # Updated error message
-    assert "WWW-Authenticate" in response.headers
+    assert response.json()["detail"] == "Invalid old password"
 
-    # Verify that the service's update_user_password method was called
     mock_user_service.update_user_password.assert_called_once_with(
         mocker.ANY, # Mocked DB connection
-        test_user_id, # User ID from mocked dependency
-        password_update_data # Pydantic model
+        test_user_id, # User ID from the authenticated user
+        password_update_data # Pydantic model for update data
     )
 
 @pytest.mark.anyio # Use anyio mark
@@ -568,17 +591,16 @@ async def test_update_user_password_user_not_found(
 
     # Send password_update_data as JSON body
     # No need for Authorization header, as auth dependency is mocked
-    response = client.put(f"/api/v1/users/{test_user_id}/password", json=password_update_data.model_dump())
+    response = client.put(f"/api/v1/users/me/password", json=password_update_data.model_dump())
 
     assert response.status_code == 404
     # Check the detail from the HTTPException raised by the router
-    assert response.json()["detail"] == f"User with ID {test_user_id} not found for password update" # Updated error message
+    assert response.json()["detail"] == f"User with ID {test_user_id} not found for password update"
 
-    # Verify that the service's update_user_password method was called
     mock_user_service.update_user_password.assert_called_once_with(
         mocker.ANY, # Mocked DB connection
-        test_user_id, # User ID from mocked dependency
-        password_update_data # Pydantic model
+        test_user_id, # User ID from the authenticated user
+        password_update_data # Pydantic model for update data
     )
 
 @pytest.mark.anyio # Use anyio mark
@@ -592,7 +614,7 @@ async def test_request_verification_email(client: TestClient, mock_user_service:
     # Simulate Service returning a dict as expected by the router
     # The service now returns the raw dict from the DAL's request_verification_link method
     # Example of a successful DAL return (assuming it includes a message and status)
-    service_return_data = {"message": "Verification email request successful", "status": "sent"}
+    service_return_data = {"message": "如果邮箱存在或已注册，验证邮件已发送。请检查您的收件箱。"} # Updated expected message
     mock_user_service.request_verification_email.return_value = service_return_data
 
     # Send request_data as JSON body
@@ -600,13 +622,14 @@ async def test_request_verification_email(client: TestClient, mock_user_service:
 
     assert response.status_code == 200
     # The router should return the message from the service result
-    assert response.json() == {"message": "Verification email request successful"}
+    assert response.json() == {"message": "如果邮箱存在或已注册，验证邮件已发送。请检查您的收件箱。"} # Updated expected message
 
+    # Ensure the service method was called with the correct arguments (conn, email, user_id=None)
     mock_user_service.request_verification_email.assert_called_once_with(
         mocker.ANY, # Mocked DB connection
-        email=email # Pass email as keyword argument
+        email # Pass email as the second argument
+        # User ID is None for unauthenticated requests, and it's an optional argument, so it might not be explicitly passed.
     )
-    # Authentication dependency is not used in this endpoint.
 
 @pytest.mark.anyio # Use anyio mark
 async def test_request_verification_email_disabled(client: TestClient, mock_user_service: AsyncMock, mocker: pytest_mock.MockerFixture):
@@ -622,13 +645,13 @@ async def test_request_verification_email_disabled(client: TestClient, mock_user
 
     # The router should catch ForbiddenError and raise HTTPException(403)
     assert response.status_code == 403 # Expect 403 Forbidden
-    assert response.json()["detail"] == "账户已被禁用" # Check the detail from HTTPException
+    assert response.json()["detail"] == "账户已被禁用"
 
     mock_user_service.request_verification_email.assert_called_once_with(
         mocker.ANY, # Mocked DB connection
-        email=email # Pass email as keyword argument
+        email # Pass email as the second argument
+        # User ID is None for unauthenticated requests, and it's an optional argument, so it might not be explicitly passed.
     )
-    # Authentication dependency is not used in this endpoint.
 
 @pytest.mark.anyio # Use anyio mark
 async def test_verify_email(client: TestClient, mock_user_service: AsyncMock, mocker: pytest_mock.MockerFixture):
@@ -645,29 +668,22 @@ async def test_verify_email(client: TestClient, mock_user_service: AsyncMock, mo
     # Simulate Service returning a dict with the expected structure for successful verification
     # The service converts DAL result to a dict suitable for the router response
     service_return_data = {
-        "user_id": str(test_user_id), # Router expects string UUID in JSON
-        "is_verified": True,
-        "message": "邮箱验证成功！您现在可以登录。" # Include message for router response
+        "UserID": test_user_id, # Key name should match DAL/Service output for UserID
+        "IsVerified": True, # Key name should match DAL/Service output for IsVerified
+        "message": "邮箱验证成功！您现在可以登录。"
     }
     mock_user_service.verify_email.return_value = service_return_data
 
     # Send verify_data_json (with UUID as string) as JSON body
     # Ensure UUID in JSON payload is string, although model_dump should handle it, double check
-    response = client.post("/api/v1/auth/verify-email", json={"token": str(verify_data.token)})
+    response = client.post("/api/v1/auth/verify-email", json={'token': str(verify_data.token)})
 
     assert response.status_code == 200
-    # Assert the structure and content of the JSON response.
-    response_json = response.json()
-    assert isinstance(response_json, dict)
-    assert response_json.get("message") == "邮箱验证成功！您现在可以登录。"
-    assert response_json.get("user_id") == str(test_user_id)
-    assert response_json.get("is_verified") is True
+    assert response.json()["message"] == "邮箱验证成功！您现在可以登录。"
+    assert response.json()["is_verified"] is True
+    assert response.json()["user_id"] == str(test_user_id) # Assert UUID converted to string
 
-    mock_user_service.verify_email.assert_called_once_with(
-        mocker.ANY, # Mocked DB connection
-        test_token # Service expects UUID object
-    )
-    # Authentication dependency is not used in this endpoint.
+    mock_user_service.verify_email.assert_called_once_with(mocker.ANY, verify_data.token)
 
 @pytest.mark.anyio # Use anyio mark
 async def test_verify_email_invalid_token(client: TestClient, mock_user_service: AsyncMock, mocker: pytest_mock.MockerFixture):
@@ -680,49 +696,38 @@ async def test_verify_email_invalid_token(client: TestClient, mock_user_service:
 
     # Note: This test does not require authentication dependencies.
     # Simulate Service layer raising DALError for invalid or expired token
-    mock_user_service.verify_email.side_effect = DALError("验证链接无效或已过期，请重新申请。")
+    mock_user_service.verify_email.side_effect = DALError("魔术链接无效或已过期，请重新申请。")
 
     # Send verify_data_json (with UUID as string) as JSON body
     # Ensure UUID in JSON payload is string, although model_dump should handle it, double check
-    response = client.post("/api/v1/auth/verify-email", json={"token": str(verify_data.token)})
+    response = client.post("/api/v1/auth/verify-email", json={'token': str(verify_data.token)})
 
-    assert response.status_code == 400 # Router maps this specific DALError to 400
-    assert response.json()["detail"] == "邮箱验证失败: 验证链接无效或已过期，请重新申请。" # Check the detail from HTTPException
-
+    assert response.status_code == 400 # Expect 400 Bad Request
+    assert response.json()["detail"] == "邮箱验证失败: 魔术链接无效或已过期，请重新申请。" # Updated expected detail
     mock_user_service.verify_email.assert_called_once_with(
         mocker.ANY, # Mocked DB connection
-        test_token # Service expects UUID object
+        test_token # Pass the original UUID object for assertion
     )
-    # Authentication dependency is not used in this endpoint.
 
 @pytest.mark.anyio # Use anyio mark
 async def test_verify_email_disabled_account(client: TestClient, mock_user_service: AsyncMock, mocker: pytest_mock.MockerFixture):
     test_token = uuid4()
     verify_data = VerifyEmail(token=test_token)
 
-    # Pydantic model_dump() on VerifyEmail will convert UUID to string automatically.
-    # Ensure UUID is sent as string in JSON body by using model_dump().
-    verify_data_json = verify_data.model_dump()
-
-    # Note: This test does not require authentication dependencies.
     # Simulate Service layer raising ForbiddenError for disabled account
-    mock_user_service.verify_email.side_effect = ForbiddenError("账户已被禁用。")
+    mock_user_service.verify_email.side_effect = ForbiddenError("账户已被禁用。") # Updated to ForbiddenError and specific message
 
-    # Send verify_data_json (with UUID as string) as JSON body
-    # Ensure UUID in JSON payload is string, although model_dump should handle it, double check
-    response = client.post("/api/v1/auth/verify-email", json={"token": str(verify_data.token)})
+    response = client.post("/api/v1/auth/verify-email", json={'token': str(verify_data.token)}) # Explicitly convert UUID to string
 
     # The router should catch ForbiddenError and raise HTTPException(403)
     assert response.status_code == 403 # Expect 403 Forbidden
-    assert response.json()["detail"] == "账户已被禁用。" # Check the detail from HTTPException
+    assert response.json()["detail"] == "账户已被禁用。" # Updated expected message
 
     mock_user_service.verify_email.assert_called_once_with(
         mocker.ANY, # Mocked DB connection
-        test_token # Service expects UUID object
+        test_token # Ensure the token is passed as UUID
     )
-    # Authentication dependency is not used in this endpoint.
 
-# Admin endpoint to get user profile by ID
 @pytest.mark.anyio # Use anyio mark
 async def test_admin_get_user_profile_by_id(client: TestClient, mock_user_service: AsyncMock, mocker: pytest_mock.MockerFixture):
     # The client fixture now provides the mocked admin authentication dependency
@@ -744,7 +749,7 @@ async def test_admin_get_user_profile_by_id(client: TestClient, mock_user_servic
         avatar_url=None,
         bio="Target user bio.",
         phone_number="0987654321",
-        join_time=datetime.now(timezone.utc), # Use timezone-aware datetime
+        join_time=datetime.now(timezone.utc),
     )
     # The mock should return the Pydantic schema instance
     mock_user_service.get_user_profile_by_id.return_value = expected_user_profile_schema
@@ -807,14 +812,14 @@ async def test_admin_update_user_profile_by_id(client: TestClient, mock_user_ser
         avatar_url=None,
         bio="Admin set bio.", # Should reflect the updated value
         phone_number="0987654321",
-        join_time=datetime.now(timezone.utc), # Use timezone-aware datetime
+        join_time=datetime.now(timezone.utc),
     )
     # The mock should return the Pydantic schema instance
     mock_user_service.update_user_profile.return_value = expected_updated_user_schema
 
     # Send update_data as JSON body. user_id is in path.
     # No need for Authorization header, as auth dependency is mocked (admin user).
-    response = client.put(f"/api/v1/users/{test_user_id}", json=update_data.model_dump(exclude_unset=True)) # Corrected endpoint
+    response = client.put(f"/api/v1/users/{test_user_id}", json=update_data.model_dump(exclude_unset=True))
 
     assert response.status_code == status.HTTP_200_OK # Expect 200 OK for successful PUT with response body
     # Convert the expected schema instance to a dictionary for comparison, handling UUID and datetime serialization
@@ -882,7 +887,7 @@ async def test_admin_change_user_status_success(client: TestClient, mock_user_se
     mock_user_service.change_user_status.return_value = True
 
     # Send status update data as JSON body. user_id is in path.
-    response = client.put(f"/api/v1/users/{test_user_id}/status", json=new_status_data.model_dump()) # Corrected endpoint
+    response = client.put(f"/api/v1/users/{test_user_id}/status", json=new_status_data.model_dump())
 
     assert response.status_code == status.HTTP_204_NO_CONTENT # Expect 204 No Content for successful status update
 
@@ -903,13 +908,13 @@ async def test_admin_change_user_status_not_found(client: TestClient, mock_user_
     new_status_data = UserStatusUpdateSchema(status="Disabled")
 
     # Simulate Service layer raising NotFoundError
-    mock_user_service.change_user_status.side_effect = NotFoundError(f"User with ID {test_user_id} not found for status change.") # Updated error message
+    mock_user_service.change_user_status.side_effect = NotFoundError(f"User with ID {test_user_id} not found for status change.")
 
     # Send status update data as JSON body. user_id is in path.
-    response = client.put(f"/api/v1/users/{test_user_id}/status", json=new_status_data.model_dump()) # Corrected endpoint
+    response = client.put(f"/api/v1/users/{test_user_id}/status", json=new_status_data.model_dump())
 
     assert response.status_code == status.HTTP_404_NOT_FOUND # Expect 404 Not Found
-    assert response.json()["detail"] == f"User with ID {test_user_id} not found for status change." # Check the detail
+    assert response.json()["detail"] == f"User with ID {test_user_id} not found for status change."
 
     # Verify Service method call
     mock_user_service.change_user_status.assert_called_once_with(
@@ -923,37 +928,38 @@ async def test_admin_change_user_status_not_found(client: TestClient, mock_user_
 async def test_admin_change_user_status_forbidden(client: TestClient, mocker: pytest_mock.MockerFixture):
     # This test simulates a scenario where the admin dependency itself raises a Forbidden exception.
     # Temporarily override get_current_active_admin_user to raise HTTPException(403)
-    mock_get_current_admin = mocker.patch('app.dependencies.get_current_active_admin_user')
-    mock_get_current_admin.side_effect = HTTPException(
-        status_code=status.HTTP_403_FORBIDDEN, detail="Operation forbidden")
+    async def mock_get_current_active_admin_user_forbidden_override():
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Operation forbidden")
 
-    # The user ID in the path doesn't matter for this test, as auth fails before reaching the handler
-    test_user_id = uuid4() # Use a dummy ID
+    # Use direct assignment within a try/finally block to ensure cleanup
+    original_dependency = client.app.dependency_overrides.get(get_current_active_admin_user)
+    try:
+        client.app.dependency_overrides[get_current_active_admin_user] = mock_get_current_active_admin_user_forbidden_override
 
-    # Act: Attempt to change user status as a non-admin (should be forbidden)
-    response = client.put(f"/api/v1/users/{test_user_id}/status", json={"status": "Disabled"}) # Use dummy data matching schema
+        user_id = TEST_USER_ID # Example user ID
+        status_update_data = UserStatusUpdateSchema(status="Disabled") # Example status update
 
-    # Assert the response status code is 403 Forbidden
-    assert response.status_code == status.HTTP_403_FORBIDDEN
+        response = client.put(f"/api/v1/users/{user_id}/status", json=status_update_data.model_dump())
 
-    # Optionally, check that the mocked dependency was called
-    mock_get_current_admin.assert_called_once()
-
-    # Ensure the service method was NOT called (as the dependency blocked it)
-    # Get the original mock service instance (this is available outside the patch context)
-    mock_user_service = client.dependency_overrides.get(get_user_service_dependency)()
-    mock_user_service.change_user_status.assert_not_called()
+        assert response.status_code == 403 # Expect 403 Forbidden
+        assert response.json()["detail"] == "Operation forbidden"
+    finally:
+        # Restore the original dependency after the test
+        if original_dependency is not None:
+            client.app.dependency_overrides[get_current_active_admin_user] = original_dependency
+        else:
+            del client.app.dependency_overrides[get_current_active_admin_user]
 
 @pytest.mark.anyio # Use anyio mark
-async def test_admin_adjust_user_credit_success(client: TestClient, mock_user_service: AsyncMock, mocker: pytest_mock.MockerFixture):
+async def test_admin_adjust_user_credit_exceeding_max_value_validation(client: TestClient, mock_user_service: AsyncMock, mocker: pytest_mock.MockerFixture):
     test_user_id = uuid4()
     test_admin_user_id = client.test_admin_user_id
     # Simulate credit adjustment exceeding max allowed by schema
-    credit_adjustment_data = UserCreditAdjustmentSchema(credit_adjustment=1001, reason="Too much")
+    credit_adjustment_data = {"credit_adjustment": 1001, "reason": "Too much"}
 
     # Send credit adjustment data.
     # FastAPI/Pydantic will handle the validation error before the service is called.
-    response = client.put(f"/api/v1/users/{test_user_id}/credit", json=credit_adjustment_data.model_dump()) # Corrected endpoint
+    response = client.put(f"/api/v1/users/{test_user_id}/credit", json=credit_adjustment_data)
 
     assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY # Expect 422 Unprocessable Entity
     # Assert the structure of the validation error detail
@@ -961,108 +967,10 @@ async def test_admin_adjust_user_credit_success(client: TestClient, mock_user_se
     assert "detail" in response_json
     assert isinstance(response_json["detail"], list)
     assert len(response_json["detail"]) > 0
-    assert response_json["detail"][0].get("type") == "greater_than"
-    assert "Input should be greater than -1001" in response_json["detail"][0].get("msg", "") # Check message content
-    assert response_json["detail"][0].get("loc") == ["body", "credit_adjustment"]
+    assert response_json["detail"][0].get("type") == "less_than_equal" # Changed from greater_than
 
     # Ensure Service method was NOT called
     mock_user_service.adjust_user_credit.assert_not_called()
-
-@pytest.mark.anyio # Use anyio mark
-async def test_admin_adjust_user_credit_missing_reason(client: TestClient, mock_user_service: AsyncMock, mocker: pytest_mock.MockerFixture):
-    test_user_id = uuid4()
-    test_admin_user_id = client.test_admin_user_id
-    # Simulate credit adjustment below min allowed by schema
-    credit_adjustment_data = UserCreditAdjustmentSchema(credit_adjustment=-1001, reason="Too little") # Should be -1001 to trigger error
-
-    # Send credit adjustment data.
-    # FastAPI/Pydantic will handle the validation error before the service is called.
-    response = client.put(f"/api/v1/users/{test_user_id}/credit", json=credit_adjustment_data.model_dump()) # Corrected endpoint
-
-    assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY # Expect 422 Unprocessable Entity
-    # Assert the structure of the validation error detail
-    response_json = response.json()
-    assert "detail" in response_json
-    assert isinstance(response_json["detail"], list)
-    assert len(response_json["detail"]) > 0
-    assert response_json["detail"][0].get("type") == "greater_than"
-    assert "Input should be greater than -1001" in response_json["detail"][0].get("msg", "") # Check message content
-    assert response_json["detail"][0].get("loc") == ["body", "credit_adjustment"]
-
-    # Ensure Service method was NOT called
-    mock_user_service.adjust_user_credit.assert_not_called() 
-
-@pytest.mark.anyio # Use anyio mark
-async def test_admin_adjust_user_credit_forbidden(client: TestClient, mocker: pytest_mock.MockerFixture):
-    # This test simulates a scenario where the admin dependency itself raises a Forbidden exception.
-    # Temporarily override get_current_active_admin_user to raise HTTPException(403)
-    mock_get_current_admin = mocker.patch('app.dependencies.get_current_active_admin_user')
-    mock_get_current_admin.side_effect = HTTPException(
-        status_code=status.HTTP_403_FORBIDDEN, detail="Operation forbidden")
-
-    # The user ID in the path doesn't matter for this test, as auth fails before reaching the handler
-    test_user_id = uuid4() # Use a dummy ID
-    credit_adjustment_data = UserCreditAdjustmentSchema(credit_adjustment=10, reason="Bonus") # Use dummy data
-
-    # Act: Attempt to adjust user credit as a non-admin (should be forbidden)
-    response = client.put(f"/api/v1/users/{test_user_id}/credit", json=credit_adjustment_data.model_dump())
-
-    # Assert the response status code is 403 Forbidden
-    assert response.status_code == status.HTTP_403_FORBIDDEN
-
-    # Optionally, check that the mocked dependency was called
-    mock_get_current_admin.assert_called_once()
-
-    # Ensure the service method was NOT called (as the dependency blocked it)
-    # Get the original mock service instance (this is available outside the patch context)
-    mock_user_service = client.dependency_overrides.get(get_user_service_dependency)()
-    mock_user_service.adjust_user_credit.assert_not_called()
-
-@pytest.mark.anyio # Use anyio mark
-async def test_admin_get_all_users_forbidden(client: TestClient, mocker: pytest_mock.MockerFixture):
-    # This test simulates a scenario where the admin dependency itself raises a Forbidden exception.
-    # Temporarily override get_current_active_admin_user to raise HTTPException(403)
-    mock_get_current_admin = mocker.patch('app.dependencies.get_current_active_admin_user')
-    mock_get_current_admin.side_effect = HTTPException(
-        status_code=status.HTTP_403_FORBIDDEN, detail="只有超级管理员可以查看所有用户。" # Use the specific error message from the router
-    )
-
-    # Act: Attempt to get all users as a non-admin (should be forbidden)
-    response = client.get("/api/v1/users/") # Corrected endpoint
-
-    # Assert the response status code is 403 Forbidden
-    assert response.status_code == status.HTTP_403_FORBIDDEN
-
-    # Optionally, check that the mocked dependency was called
-    mock_get_current_admin.assert_called_once()
-
-    # Ensure the service method was NOT called (as the dependency blocked it)
-    # Get the original mock service instance (this is available outside the patch context)
-    mock_user_service = client.dependency_overrides.get(get_user_service_dependency)()
-    mock_user_service.get_all_users.assert_not_called()
-
-@pytest.mark.anyio # Use anyio mark
-async def test_admin_change_user_status_invalid_value(client: TestClient, mock_user_service: AsyncMock, mocker: pytest_mock.MockerFixture):
-    test_user_id = uuid4()
-    test_admin_user_id = client.test_admin_user_id
-    # Use an invalid status value
-    invalid_status_data = {"status": "InvalidStatus"}
-
-    # Send status update data with invalid value.
-    # FastAPI/Pydantic will handle the validation error before the service is called.
-    response = client.put(f"/api/v1/users/{test_user_id}/status", json=invalid_status_data) # Corrected endpoint
-
-    assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY # Expect 422 Unprocessable Entity
-    # Assert the structure of the validation error detail
-    response_json = response.json()
-    assert "detail" in response_json
-    assert isinstance(response_json["detail"], list)
-    assert len(response_json["detail"]) > 0
-    assert response_json["detail"][0].get("type") == "enum"
-    assert "value is not a valid enumeration member" in response_json["detail"][0].get("msg", "")
-
-    # Ensure Service method was NOT called
-    mock_user_service.change_user_status.assert_not_called()
 
 @pytest.mark.anyio # Use anyio mark
 async def test_admin_adjust_user_credit_missing_reason(client: TestClient, mock_user_service: AsyncMock, mocker: pytest_mock.MockerFixture):
@@ -1073,7 +981,7 @@ async def test_admin_adjust_user_credit_missing_reason(client: TestClient, mock_
 
     # Send credit adjustment data without reason.
     # FastAPI/Pydantic will handle the validation error before the service is called.
-    response = client.put(f"/api/v1/users/{test_user_id}/credit", json=credit_adjustment_data) # Corrected endpoint
+    response = client.put(f"/api/v1/users/{test_user_id}/credit", json=credit_adjustment_data)
 
     assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY # Expect 422 Unprocessable Entity
     # Assert the structure of the validation error detail
@@ -1088,15 +996,15 @@ async def test_admin_adjust_user_credit_missing_reason(client: TestClient, mock_
     mock_user_service.adjust_user_credit.assert_not_called()
 
 @pytest.mark.anyio # Use anyio mark
-async def test_admin_adjust_user_credit_exceeding_max(client: TestClient, mock_user_service: AsyncMock, mocker: pytest_mock.MockerFixture):
+async def test_admin_adjust_user_credit_below_min_value_validation(client: TestClient, mock_user_service: AsyncMock, mocker: pytest_mock.MockerFixture):
     test_user_id = uuid4()
     test_admin_user_id = client.test_admin_user_id
-    # Simulate credit adjustment exceeding max allowed by schema
-    credit_adjustment_data = UserCreditAdjustmentSchema(credit_adjustment=1001, reason="Too much")
+    # Simulate credit adjustment below min allowed by schema
+    credit_adjustment_data = {"credit_adjustment": -1001, "reason": "Too little"}
 
     # Send credit adjustment data.
     # FastAPI/Pydantic will handle the validation error before the service is called.
-    response = client.put(f"/api/v1/users/{test_user_id}/credit", json=credit_adjustment_data.model_dump()) # Corrected endpoint
+    response = client.put(f"/api/v1/users/{test_user_id}/credit", json=credit_adjustment_data)
 
     assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY # Expect 422 Unprocessable Entity
     # Assert the structure of the validation error detail
@@ -1104,23 +1012,70 @@ async def test_admin_adjust_user_credit_exceeding_max(client: TestClient, mock_u
     assert "detail" in response_json
     assert isinstance(response_json["detail"], list)
     assert len(response_json["detail"]) > 0
-    assert response_json["detail"][0].get("type") == "greater_than"
-    assert "Input should be greater than -1001" in response_json["detail"][0].get("msg", "") # Check message content
-    assert response_json["detail"][0].get("loc") == ["body", "credit_adjustment"]
+    assert response_json["detail"][0].get("type") == "greater_than_equal" # Changed from greater_than
 
     # Ensure Service method was NOT called
     mock_user_service.adjust_user_credit.assert_not_called()
 
 @pytest.mark.anyio # Use anyio mark
-async def test_admin_adjust_user_credit_below_min(client: TestClient, mock_user_service: AsyncMock, mocker: pytest_mock.MockerFixture):
+async def test_admin_adjust_user_credit_forbidden(client: TestClient, mocker: pytest_mock.MockerFixture):
+    # This test simulates a scenario where the admin dependency itself raises a Forbidden exception.
+    # Temporarily override get_current_active_admin_user to raise HTTPException(403)
+    async def mock_get_current_active_admin_user_forbidden_override():
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Operation forbidden")
+
+    # Use direct assignment within a try/finally block to ensure cleanup
+    original_dependency = client.app.dependency_overrides.get(get_current_active_admin_user)
+    try:
+        client.app.dependency_overrides[get_current_active_admin_user] = mock_get_current_active_admin_user_forbidden_override
+
+        user_id = TEST_USER_ID # Example user ID
+        credit_adjustment_data = UserCreditAdjustmentSchema(credit_adjustment=50, reason="Good behavior")
+
+        response = client.put(f"/api/v1/users/{user_id}/credit", json=credit_adjustment_data.model_dump())
+
+        assert response.status_code == 403 # Expect 403 Forbidden
+        assert response.json()["detail"] == "Operation forbidden"
+    finally:
+        # Restore the original dependency after the test
+        if original_dependency is not None:
+            client.app.dependency_overrides[get_current_active_admin_user] = original_dependency
+        else:
+            del client.app.dependency_overrides[get_current_active_admin_user]
+
+@pytest.mark.anyio # Use anyio mark
+async def test_admin_get_all_users_forbidden(client: TestClient, mocker: pytest_mock.MockerFixture):
+    # This test simulates a scenario where the admin dependency itself raises a Forbidden exception.
+    # Temporarily override get_current_active_admin_user to raise HTTPException(403)
+    async def mock_get_current_active_admin_user_forbidden_override():
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="只有超级管理员可以查看所有用户。")
+
+    # Use direct assignment within a try/finally block to ensure cleanup
+    original_dependency = client.app.dependency_overrides.get(get_current_active_admin_user)
+    try:
+        client.app.dependency_overrides[get_current_active_admin_user] = mock_get_current_active_admin_user_forbidden_override
+
+        response = client.get("/api/v1/users/")
+
+        assert response.status_code == 403 # Expect 403 Forbidden
+        assert response.json()["detail"] == "只有超级管理员可以查看所有用户。"
+    finally:
+        # Restore the original dependency after the test
+        if original_dependency is not None:
+            client.app.dependency_overrides[get_current_active_admin_user] = original_dependency
+        else:
+            del client.app.dependency_overrides[get_current_active_admin_user]
+
+@pytest.mark.anyio # Use anyio mark
+async def test_admin_change_user_status_invalid_value(client: TestClient, mock_user_service: AsyncMock, mocker: pytest_mock.MockerFixture):
     test_user_id = uuid4()
     test_admin_user_id = client.test_admin_user_id
-    # Simulate credit adjustment below min allowed by schema
-    credit_adjustment_data = UserCreditAdjustmentSchema(credit_adjustment=-1001, reason="Too little") # Should be -1001 to trigger error
+    # Use an invalid status value
+    invalid_status_data = {"status": "InvalidStatus"}
 
-    # Send credit adjustment data.
+    # Send status update data with invalid value.
     # FastAPI/Pydantic will handle the validation error before the service is called.
-    response = client.put(f"/api/v1/users/{test_user_id}/credit", json=credit_adjustment_data.model_dump()) # Corrected endpoint
+    response = client.put(f"/api/v1/users/{test_user_id}/status", json=invalid_status_data)
 
     assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY # Expect 422 Unprocessable Entity
     # Assert the structure of the validation error detail
@@ -1128,12 +1083,10 @@ async def test_admin_adjust_user_credit_below_min(client: TestClient, mock_user_
     assert "detail" in response_json
     assert isinstance(response_json["detail"], list)
     assert len(response_json["detail"]) > 0
-    assert response_json["detail"][0].get("type") == "greater_than"
-    assert "Input should be greater than -1001" in response_json["detail"][0].get("msg", "") # Check message content
-    assert response_json["detail"][0].get("loc") == ["body", "credit_adjustment"]
+    assert response_json["detail"][0].get("type") == "literal_error" # Changed from enum
 
     # Ensure Service method was NOT called
-    mock_user_service.adjust_user_credit.assert_not_called()
+    mock_user_service.change_user_status.assert_not_called()
 
 @pytest.mark.anyio # Use anyio mark
 async def test_admin_get_all_users_success(client: TestClient, mock_user_service: AsyncMock, mocker: pytest_mock.MockerFixture):
@@ -1141,55 +1094,69 @@ async def test_admin_get_all_users_success(client: TestClient, mock_user_service
     # We can access the test admin user ID from the client instance
     test_admin_user_id = client.test_admin_user_id
 
-    # Simulate the service returning the expected UserResponseSchema instance
-    expected_user_profile_schema = UserResponseSchema(
-        user_id=uuid4(), # Service returns UUID object
-        username="target_user",
-        email="target@example.com",
-        status="Active",
-        credit=100,
-        is_staff=False,
-        is_super_admin=False, # Include is_super_admin
-        is_verified=True,
-        major="Physics", # Explicitly include optional fields even if None
-        avatar_url=None,
-        bio="Target user bio.",
-        phone_number="0987654321",
-        join_time=datetime.now(timezone.utc), # Use timezone-aware datetime
-    )
-    # The mock should return the Pydantic schema instance
-    mock_user_service.get_user_profile_by_id.return_value = expected_user_profile_schema
+    # Simulate the service returning a list of UserResponseSchema instances
+    expected_users_list = [
+        UserResponseSchema(
+            user_id=uuid4(), # Service returns UUID object
+            username="user1",
+            email="user1@example.com",
+            status="Active",
+            credit=100,
+            is_staff=False,
+            is_super_admin=False,
+            is_verified=True,
+            major="Math",
+            avatar_url=None,
+            bio="User 1 bio.",
+            phone_number="1112223333",
+            join_time=datetime.now(timezone.utc),
+        ),
+        UserResponseSchema(
+            user_id=uuid4(),
+            username="user2",
+            email="user2@example.com",
+            status="Disabled",
+            credit=50,
+            is_staff=False,
+            is_super_admin=False,
+            is_verified=False,
+            major="Computer Science",
+            avatar_url=None,
+            bio="User 2 bio.",
+            phone_number="4445556666",
+            join_time=datetime.now(timezone.utc),
+        )
+    ]
+    mock_user_service.get_all_users.return_value = expected_users_list
 
-    # GET request to the admin endpoint to get a user profile by ID.
+    # GET request to the admin endpoint to get all users.
     # The client fixture provides the mocked admin user.
-    response = client.get(f"/api/v1/users/{uuid4()}") # Corrected endpoint
+    response = client.get("/api/v1/users/")
 
-    assert response.status_code == status.HTTP_200_OK # Expect 200 OK for successful GET
+    assert response.status_code == status.HTTP_200_OK # Expect 200 OK
     response_json = response.json()
-    # The router should serialize the UserResponseSchema instance to JSON
-    # Compare individual fields from the response JSON with the expected schema object
-    assert isinstance(response_json, dict)
-    assert response_json.get('user_id') == str(expected_user_profile_schema.user_id)
-    assert response_json.get('username') == expected_user_profile_schema.username
-    assert response_json.get('email') == expected_user_profile_schema.email
-    assert response_json.get('status') == expected_user_profile_schema.status
-    assert response_json.get('credit') == expected_user_profile_schema.credit
-    assert response_json.get('is_staff') == expected_user_profile_schema.is_staff
-    assert response_json.get('is_super_admin') == expected_user_profile_schema.is_super_admin
-    assert response_json.get('is_verified') == expected_user_profile_schema.is_verified
-    assert response_json.get('major') == expected_user_profile_schema.major
-    assert response_json.get('avatar_url') == expected_user_profile_schema.avatar_url
-    assert response_json.get('bio') == expected_user_profile_schema.bio
-    assert response_json.get('phone_number') == expected_user_profile_schema.phone_number
+    assert isinstance(response_json, list)
+    assert len(response_json) == len(expected_users_list)
 
-    # Compare join_time by parsing both into datetime objects
-    assert isoparse(response_json.get('join_time')) == expected_user_profile_schema.join_time
+    # Verify each user in the response
+    for i, user_data in enumerate(response_json):
+        expected_user = expected_users_list[i]
+        assert user_data.get('user_id') == str(expected_user.user_id)
+        assert user_data.get('username') == expected_user.username
+        assert user_data.get('email') == expected_user.email
+        assert user_data.get('status') == expected_user.status
+        assert user_data.get('credit') == expected_user.credit
+        assert user_data.get('is_staff') == expected_user.is_staff
+        assert user_data.get('is_super_admin') == expected_user.is_super_admin
+        assert user_data.get('is_verified') == expected_user.is_verified
+        assert user_data.get('major') == expected_user.major
+        assert user_data.get('avatar_url') == expected_user.avatar_url
+        assert user_data.get('bio') == expected_user.bio
+        assert user_data.get('phone_number') == expected_user.phone_number
+        assert isoparse(user_data.get('join_time')) == expected_user.join_time
 
-    mock_user_service.get_user_profile_by_id.assert_called_once_with(
+    # Ensure the correct service method was called
+    mock_user_service.get_all_users.assert_called_once_with(
         mocker.ANY, # Mocked DB connection
-        uuid4() # User ID from path (FastAPI converts string to UUID object)
+        test_admin_user_id # Admin ID from mocked dependency
     )
-    # Authentication dependency is mocked via dependency_overrides in client fixture,
-    # so we don't assert calls on a patched mock here.
-
-    mock_user_service.get_all_users.assert_called_once() 

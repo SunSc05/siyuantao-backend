@@ -1,7 +1,7 @@
 # app/services/user_service.py
 import pyodbc
 from uuid import UUID
-from typing import Optional
+from typing import Optional, Callable, Awaitable
 import logging
 import re # Import regex for email validation
 
@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__) # Initialize logger
 from app.dal.user_dal import UserDAL # Import the UserDAL class
 from app.schemas.user_schemas import UserRegisterSchema, UserLoginSchema, UserProfileUpdateSchema, UserPasswordUpdate, UserStatusUpdateSchema, UserCreditAdjustmentSchema, UserResponseSchema, RequestVerificationEmail, VerifyEmail # Import necessary schemas
 from app.utils.auth import get_password_hash, verify_password, create_access_token # Importing auth utilities
-from app.exceptions import NotFoundError, IntegrityError, DALError, AuthenticationError, ForbiddenError # Import necessary exceptions
+from app.exceptions import NotFoundError, IntegrityError, DALError, AuthenticationError, ForbiddenError, EmailSendingError # Import necessary exceptions
 from datetime import timedelta # Needed for token expiry
 from app.config import settings # Import settings object
 from datetime import datetime # Import datetime for data conversion
@@ -21,8 +21,9 @@ from app.utils.email_sender import send_student_verification_email # Import the 
 
 # Encapsulate Service functions within a class
 class UserService:
-    def __init__(self, user_dal: UserDAL):
+    def __init__(self, user_dal: UserDAL, email_sender: Optional[Callable[[str, str, str], Awaitable[None]]] = None):
         self.user_dal = user_dal
+        self.email_sender = email_sender or self._send_email # Use default if not provided
 
     async def create_user(self, conn: pyodbc.Connection, user_data: UserRegisterSchema) -> UserResponseSchema:
         """创建新用户。
@@ -314,79 +315,92 @@ class UserService:
 
         return True # Indicate success
 
-    async def request_verification_email(self, conn: pyodbc.Connection, user_id: UUID, email: str) -> dict:
+    async def request_verification_email(self, conn: pyodbc.Connection, email: str, user_id: Optional[UUID] = None) -> dict:
         """
-        Service layer function to request email verification link for a user.
-        Validates email format for student verification purposes, updates user's email,
-        calls DAL to generate token, and sends verification email.
+        请求邮箱验证链接。
+        如果 user_id 为 None，表示是未认证用户通过邮箱请求验证。
+        如果 user_id 存在，表示是已认证用户请求验证，此时可以更新其邮箱地址。
         """
-        logger.info(f"Attempting to request verification email for user ID: {user_id}, email: {email}")
+        logger.info(f"Service: Requesting verification link for user {user_id} with email {email}")
 
-        # Business Logic: Validate email format (e.g., ending with .edu.cn for student verification)
-        # You can adjust the regex based on specific university email formats
-        if not re.match(r"^[a-zA-Z0-9._%+-]+@([a-zA-Z0-9-]+\.)+edu\.cn$", email):
-             raise ValueError("无效的校园邮箱格式。请确保邮箱以 .edu.cn 结尾。") # Use ValueError for bad input
-
-        try:
-            # Optional Business Logic: Check if email is already verified by another user
-            # This check is ideally done in the DAL/Stored Procedure for atomicity,
-            # but a pre-check here can give faster feedback. However, rely on DAL's
-            # IntegrityError for the definitive check during token generation.
-            # For now, let's rely on the DAL's handling of duplicate emails.
-
-            # 1. Update user's email in the database before requesting the verification link.
-            # Reuse the update_user_profile method from DAL.
-            logger.debug(f"Attempting to update email for user ID {user_id} to {email}")
-            # Call DAL to update user profile, only providing the email
-            await self.user_dal.update_user_profile(conn, user_id, email=email)
-            logger.debug(f"Email updated for user ID {user_id}")
-
-            # Call DAL to request verification link. Pass user_id and email.
-            # The DAL method should update the email field if necessary and generate/store the token.
-            logger.debug(f"Calling DAL.request_verification_link with user ID: {user_id}, email: {email}")
-            result = await self.user_dal.request_verification_link(conn, user_id=user_id, email=email) # Pass user_id and email
-
-            # The DAL should handle cases like disabled account, email already verified etc.
-            # If result indicates success (e.g., a token was generated/sent), return a success message.
-            # Assuming DAL returns a dictionary with a 'VerificationToken' key on success.
-            verification_token = result.get('VerificationToken')
-            message = result.get('Message') # Assuming DAL might return messages too
-
-            if verification_token:
-                 # 2. Call email sending tool
-                 # The URL needs to be your frontend verification page URL
-                 frontend_verification_url = f"{str(settings.FRONTEND_DOMAIN).rstrip('/')}/verify-email?token={verification_token}" # Use the general verify-email route
-                 await send_student_verification_email(email, frontend_verification_url, settings.MAGIC_LINK_EXPIRE_MINUTES)
-
-                 logger.info(f"Verification email sent to {email} for user {user_id}.")
-                 return {"message": message or "验证邮件已发送，请查收您的邮箱。", "token": verification_token} # Return token for testing/debugging
-            elif message:
-                 # If DAL returned a message but no token, it might be an informative message (e.g., already verified)
-                 logger.info(f"DAL returned message during request_verification_email for {email}: {message}")
-                 # Decide how to handle these messages. Maybe return them as success with a different status code or raise specific exceptions.
-                 # For now, treat as a successful process with an informative message.
-                 return {"message": message}
+        # 1. 检查用户是否存在（如果提供了 user_id）
+        if user_id:
+            user_profile = await self.user_dal.get_user_by_id(conn, user_id)
+            if not user_profile:
+                raise NotFoundError(f"用户ID {user_id} 未找到。")
+            if user_profile.get('Status') == 'Disabled': # Assuming 'Status' field from DAL
+                raise ForbiddenError("您的账户已被禁用，无法请求验证邮件。")
+            
+            # 如果用户提供了邮箱地址且与当前数据库中的邮箱不同，则更新邮箱
+            current_email_in_db = user_profile.get('Email')
+            if current_email_in_db != email:
+                # 检查新邮箱是否已被其他用户使用
+                existing_user_with_email = await self.user_dal.get_user_by_email(conn, email)
+                if existing_user_with_email and existing_user_with_email['user_id'] != user_id:
+                    raise IntegrityError("该邮箱已被其他用户注册。")
+                
+                # 更新用户邮箱
+                await self.user_dal.update_user_profile(conn, user_id, email=email) # Pass email as keyword arg
+                logger.info(f"Service: Updated email for user {user_id} from {current_email_in_db} to {email}")
             else:
-                 # This might indicate an issue in DAL even if no exception was raised.
-                 logger.error(f"DAL.request_verification_link returned unexpected result for user {user_id}, email {email}: {result}")
-                 raise DALError("请求验证链接失败：数据库处理异常。")
+                logger.debug(f"Service: User {user_id} email is already {email}, no update needed.")
+        else:
+            # 如果未提供 user_id，则检查邮箱是否已注册
+            existing_user_with_email = await self.user_dal.get_user_by_email(conn, email)
+            if existing_user_with_email:
+                # 如果邮箱已注册，并且账户已被禁用，则不允许发送验证邮件
+                if existing_user_with_email.get('Status') == 'Disabled':
+                     raise ForbiddenError("此邮箱关联的账户已被禁用。")
+                # 如果邮箱已注册且未禁用，出于安全考虑，仍然假装发送邮件，但实际不处理
+                # 返回一个通用消息，避免泄露邮箱是否注册的信息
+                logger.warning(f"Service: Request for already registered active email {email} without user_id. Returning generic success.")
+                return {"message": "如果邮箱存在或已注册，验证邮件已发送。请检查您的收件箱。"}
+            
+        # 2. 调用 DAL 层请求魔术链接
+        # DAL should handle token generation, storage, and return a dictionary with token info.
+        # It's important that the DAL explicitly returns a success indicator or raises a specific error.
+        try:
+            # Pass user_id (can be None) and email to DAL
+            dal_result = await self.user_dal.request_verification_link(conn, user_id, email)
+            logger.debug(f"Service: DAL request_verification_link result: {dal_result}")
 
-        except IntegrityError as e:
-             # Catch IntegrityError from DAL (e.g., email already in use)
-            logger.warning(f"IntegrityError during verification email request for user {user_id}, email {email}: {e}")
-            raise e # Re-raise IntegrityError
-        except ValueError as e:
-             # Catch ValueError from email validation
-            logger.warning(f"ValueError during verification email request for user {user_id}, email {email}: {e}")
-            raise e # Re-raise ValueError
-        except DALError as e:
-            # Catch specific DAL errors (like disabled account handled in DAL SP)
-            logger.error(f"Database error during verification email request for user {user_id}, email {email}: {e}")
-            raise e # Re-raise specific DAL errors like disabled account
+            # The DAL should return a dictionary on success.
+            # We expect 'VerificationToken' and 'ExpiresAt' for the client to use.
+            if not dal_result or 'VerificationToken' not in dal_result:
+                raise DALError("请求验证链接失败：数据库返回无效信息。")
+
+            # In a real application, you'd then use a dedicated email service to send the link.
+            verification_token = dal_result['VerificationToken']
+            expires_at = dal_result['ExpiresAt'] # This will be a datetime object from pyodbc, or string
+            
+            # Construct the magic link (assuming a frontend endpoint /verify-email?token={token})
+            magic_link = f"{settings.FRONTEND_DOMAIN}/verify-email?token={verification_token}"
+            
+            # Send the email (mocked for now, or use a real email sending library)
+            # Example using a placeholder email sender function
+            try:
+                # Using a dummy email sending function for now
+                self._send_email(
+                    recipient_email=email,
+                    subject="思源淘账户邮箱验证",
+                    body=f"请点击此链接验证您的邮箱：{magic_link}\n链接将在 {settings.MAGIC_LINK_EXPIRE_MINUTES} 分钟后过期。"
+                )
+                logger.info(f"Service: Verification email sent to {email}")
+            except Exception as e:
+                logger.error(f"Service: Failed to send verification email to {email}: {e}")
+                # You might want to rollback the token creation if email sending fails,
+                # or have a separate mechanism to clean up unused tokens.
+                # For now, we'll re-raise as a DALError (as it's a server-side issue for the user)
+                raise EmailSendingError(f"无法发送验证邮件到 {email}。") from e
+
+            return {"message": "验证邮件已发送。请检查您的收件箱。", "token": str(verification_token)} # Return success message and token (for debugging/testing)
+
+        except (NotFoundError, IntegrityError, ForbiddenError, EmailSendingError, DALError) as e:
+            logger.warning(f"Service: Failed to request verification email for {email}: {e}")
+            raise e # Re-raise specific exceptions from DAL
         except Exception as e:
-            # Catch any other unexpected errors
-            logger.error(f"Unexpected error during verification email request for user {user_id}, email {email}: {e}")
-            raise DALError(f"发送验证邮件时发生未知错误: {e}") from e
+            logger.exception(f"Service: Unexpected error requesting verification email for {email}")
+            raise DALError(f"邮箱验证请求失败：内部处理异常。") from e
 
     async def verify_email(self, conn: pyodbc.Connection, token: UUID) -> dict:
         """

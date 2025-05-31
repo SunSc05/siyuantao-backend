@@ -1,11 +1,13 @@
 # app/dal/base.py
 import pyodbc
-from app.exceptions import DALError, NotFoundError, IntegrityError, SQLSTATE_ERROR_MAP
+from app.exceptions import DALError, NotFoundError, IntegrityError, ForbiddenError
+from app.dal.exceptions import map_db_exception # Import the new mapping function
 from uuid import UUID
 import logging
 import asyncio # Import asyncio
 import functools # Import functools
 from typing import List, Dict, Any, Optional
+from app.dal.transaction import transaction # Import transaction from its new home
 
 logger = logging.getLogger(__name__)
 
@@ -76,37 +78,18 @@ async def execute_query(
 
 
     except pyodbc.Error as e:
-        # 根据 pyodbc 错误信息判断并抛出自定义异常
-        error_message = str(e)
-        error_message_lower = error_message.lower()
-        
-        # 检查存储过程的 RAISERROR 消息
-        if '用户名已存在' in error_message or 'duplicate username' in error_message_lower:
-            raise IntegrityError("Username already exists.") from e
-        elif '手机号已存在' in error_message or 'duplicate phone' in error_message_lower:
-            raise IntegrityError("Phone number already exists.") from e
-        elif '用户不存在' in error_message or 'not found' in error_message_lower:
-            raise NotFoundError(error_message) from e
-        elif '无权限' in error_message or 'permission denied' in error_message_lower:
-            raise ForbiddenError(error_message) from e
-        elif '无效的' in error_message or 'invalid' in error_message_lower:
-            raise DALError(error_message) from e
-        elif '违反唯一约束' in error_message or 'unique constraint' in error_message_lower:
-            raise IntegrityError(error_message) from e
-        else:
-            logger.error(f"Database error executing SQL: {sql} - {e}")
-            raise DALError(f"Database operation failed: {e}") from e
+        # Use the new mapping function for pyodbc.Error
+        raise map_db_exception(e) from e
 
     except Exception as e:
-        # 捕获其他意外异常
+        # Catch other unexpected exceptions and wrap them in DALError
         logger.error(f"Unexpected error executing SQL: {sql} - {e}")
         raise DALError(f"An unexpected database error occurred: {e}") from e
 
     finally:
-        # 在线程池中关闭游标 (cursor.close 是同步操作)
-        # 确保游标对象存在且可关闭
+        # In-executor cursor close
         if 'cursor' in locals() and cursor:
-             await loop.run_in_executor(None, cursor.close)
+            await loop.run_in_executor(None, cursor.close)
         # 注意：连接不在此处关闭，由依赖注入管理其生命周期
 
         
@@ -151,7 +134,8 @@ async def execute_non_query(conn: pyodbc.Connection, sql: str, params: tuple = (
     except pyodbc.Error as e:
         await loop.run_in_executor(None, conn.rollback)
         logger.error(f"Database error executing non-query SQL: {sql} - {e}")
-        raise DALError(f"Database non-query operation failed: {e}") from e
+        # Use the new mapping function for pyodbc.Error
+        raise map_db_exception(e) from e
     except Exception as e:
         await loop.run_in_executor(None, conn.rollback)
         logger.error(f"An unexpected error occurred during non-query execution: {e}")
