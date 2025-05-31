@@ -1,5 +1,5 @@
 # app/routers/users.py
-from fastapi import APIRouter, Depends, status, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, status, HTTPException, UploadFile, File, Request
 # from app.schemas.user_schemas import UserCreate, UserResponse, UserLogin, Token, UserUpdate, RequestVerificationEmail, VerifyEmail, UserPasswordUpdate # Import schemas from here
 from app.schemas.user_schemas import (
     UserResponseSchema, 
@@ -128,11 +128,8 @@ async def update_current_user_password(
 
 @router.put("/me/avatar", response_model=UserResponseSchema)
 async def upload_my_avatar(
-    # User needs to be authenticated
+    avatar_file: UploadFile = File(...), # Let FastAPI handle the file upload directly
     current_user: dict = Depends(get_current_authenticated_user),
-    # Receive the uploaded file
-    avatar_file: UploadFile = File(...),
-    # Dependencies for database connection and user service
     conn: pyodbc.Connection = Depends(get_db_connection),
     user_service: UserService = Depends(get_user_service)
 ):
