@@ -619,20 +619,16 @@ BEGIN
     BEGIN
         SET @DebugMessage = @DebugMessage + N' | User found.';
         -- 检查依赖关系 (暂时简化或注释掉大部分，专注于删除逻辑本身)
-        IF EXISTS (SELECT 1 FROM [Product] WHERE OwnerID = @userId AND Status NOT IN ('Sold', 'Cancelled')) OR
-           EXISTS (SELECT 1 FROM [Order] WHERE (BuyerID = @userId OR SellerID = @userId) AND Status NOT IN ('Completed', 'Cancelled', 'Refunded')) OR
-        --    EXISTS (SELECT 1 FROM [Evaluation] WHERE BuyerID = @userId OR SellerID = @userId) OR
-        --    EXISTS (SELECT 1 FROM [Report] WHERE ReporterUserID = @userId OR ReportedUserID = @userId) OR
-        --    EXISTS (SELECT 1 FROM [Favorite] WHERE UserID = @userId) OR
-        --    EXISTS (SELECT 1 FROM [StudentAuthentication] WHERE UserID = @userId AND Status = 'Verified') OR
+        IF EXISTS (SELECT 1 FROM [Product] WHERE OwnerID = @userId AND Status NOT IN ('Sold', 'Withdrawn')) OR
+           EXISTS (SELECT 1 FROM [Order] WHERE (BuyerID = @userId OR SellerID = @userId) AND Status NOT IN ('Completed', 'Cancelled')) OR
+           EXISTS (SELECT 1 FROM [Evaluation] WHERE BuyerID = @userId OR SellerID = @userId) OR
+           EXISTS (SELECT 1 FROM [Report] WHERE ReporterUserID = @userId OR ReportedUserID = @userId) OR
+           EXISTS (SELECT 1 FROM [ReturnRequest] WHERE OrderID IN (SELECT OrderID FROM [Order] WHERE BuyerID = @userId OR SellerID = @userId)) OR
            EXISTS (
                 SELECT 1 FROM [ChatMessage] CM
                 WHERE ((CM.SenderID = @userId AND CM.SenderVisible = 1) OR (CM.ReceiverID = @userId AND CM.ReceiverVisible = 1))
                 AND CM.SendTime > DATEADD(month, -3, GETDATE())
-           ) OR
-        --    EXISTS (SELECT 1 FROM [SystemNotification] WHERE UserID = @userId AND IsRead = 0) OR -- 假设未读系统通知不阻止删除
-           EXISTS (SELECT 1 FROM [Order] WHERE BuyerID = @userId OR SellerID = @userId AND Status NOT IN ('Completed', 'Cancelled'))
-
+           )
         BEGIN
             SET @DebugMessage = @DebugMessage + N' | Dependency check failed. Cannot delete user.';
             SET @OperationResultCode = -2; -- 表示存在依赖，无法删除
@@ -643,17 +639,45 @@ BEGIN
                 BEGIN TRANSACTION;
                 SET @DebugMessage = @DebugMessage + N' | No critical dependencies found. Proceeding with deletion.';
 
-                -- 执行删除操作 (示例, 从 User 表删除)
-                -- 实际应用中需要按正确的顺序删除相关表的数据
-                -- DELETE FROM [StudentAuthentication] WHERE UserID = @userId;
-                -- DELETE FROM [Favorite] WHERE UserID = @userId;
-                -- DELETE FROM [Report] WHERE ReporterUserID = @userId OR ReportedUserID = @userId;
-                -- DELETE FROM [Evaluation] WHERE BuyerID = @userId OR SellerID = @userId;
-                -- DELETE FROM [ChatMessage] WHERE SenderID = @userId OR ReceiverID = @userId; -- 或者仅标记为不可见
-                -- DELETE FROM [Order] WHERE BuyerID = @userId OR SellerID = @userId; -- 通常订单不直接删除，而是标记
-                -- DELETE FROM [Product] WHERE OwnerID = @userId; -- 通常商品不直接删除
-                -- DELETE FROM [Transaction] WHERE BuyerID = @userId OR SellerID = @userId;
-                -- DELETE FROM [SystemNotification] WHERE UserID = @userId;
+                -- 实际应用中需要按正确的顺序删除相关表的数据 (根据 ON DELETE NO ACTION 的外键)
+                -- 严格按照 ON DELETE NO ACTION 的表进行删除，ON DELETE CASCADE 的表无需手动删除
+
+                -- 删除 ChatMessage 记录 (Sender 或 Receiver)
+                DELETE FROM [ChatMessage] WHERE SenderID = @userId OR ReceiverID = @userId;
+
+                -- 删除 Evaluation 记录 (Buyer 或 Seller)
+                DELETE FROM [Evaluation] WHERE BuyerID = @userId OR SellerID = @userId;
+
+                -- 删除 Report 记录 (Reporter 或 Reported)
+                DELETE FROM [Report] WHERE ReporterUserID = @userId OR ReportedUserID = @userId;
+
+                -- 删除 ReturnRequest 记录 (通过关联订单ID)
+                -- 注意：如果 ReturnRequest 关联的订单不是该用户创建或接收的，这个删除可能不合适
+                -- 这里假设 ReturnRequest 是与用户的订单强关联，如果用户被删除，其所有相关退货请求也应删除
+                DELETE FROM [ReturnRequest] WHERE OrderID IN (SELECT OrderID FROM [Order] WHERE BuyerID = @userId OR SellerID = @userId);
+
+                -- 现有设计中 Product 和 Order 对 User 是 ON DELETE NO ACTION，
+                -- 这意味着如果用户有商品或订单，除非这些商品已售罄/下架，订单已完成/取消，否则不能删除用户。
+                -- 前面的 EXISTS 检查已经包含了这个逻辑。
+                -- 因此，如果能走到这里，说明用户没有"活跃"的商品或订单，这些数据可能已经被处理或无需再手动删除。
+                -- For example: 如果商品 Status = 'Sold'/'Withdrawn'，可以删除。
+                -- 如果订单 Status = 'Completed'/'Cancelled'，可以删除。
+                -- 但是外键是 NO ACTION，这意味着如果你尝试删除 User，即使 Product 或 Order 状态是 'Sold'/'Completed'，
+                -- 只要有引用，仍然会报错。因此，需要在删除 User 前，处理这些引用。
+                -- 最安全的做法是，如果 EXISTS 检查通过，说明符合删除条件，
+                -- 那么对于 ON DELETE NO ACTION 的表，如果允许用户删除，
+                -- 比如 Product 和 Order，你可能需要考虑将其 OwnerID 或 BuyerID/SellerID 设置为 NULL 
+                -- 或者指向一个匿名用户，或者业务上决定这些数据可以一起删除。
+                -- 鉴于目前的 EXISTS 检查已经很严格，我们认为能通过检查的，这些关联数据是安全的。
+                -- 但是为了数据库完整性，如果业务允许删除已完成/取消的订单和已售罄/下架的商品，
+                -- 那么在删除用户之前，你需要手动删除这些 Product 和 Order 记录。
+                -- 否则，你不能删除用户。
+
+                -- 如果业务允许删除已完成/取消的订单和已售罄/下架的商品：
+                -- DELETE FROM [Order] WHERE BuyerID = @userId OR SellerID = @userId;
+                -- DELETE FROM [Product] WHERE OwnerID = @userId;
+
+
                 -- 最后删除用户表自身
                 DELETE FROM [User] WHERE UserID = @userId;
 

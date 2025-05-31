@@ -14,16 +14,16 @@ BEGIN
     SET NOCOUNT ON;
 
     -- 检查订单状态是否从非 'Cancelled'/'Rejected' 变为 'Cancelled' 或 'Rejected'
-    IF UPDATE(OrderStatus)
+    IF UPDATE(Status)
     BEGIN
         BEGIN TRY -- 添加 TRY 块
             UPDATE P
-            SET P.Stock = P.Stock + i.Quantity
+            SET P.Quantity = P.Quantity + i.Quantity
             FROM [Product] P
             JOIN inserted i ON P.ProductID = i.ProductID
             JOIN deleted d ON i.OrderID = d.OrderID
-            WHERE i.OrderStatus IN ('Cancelled', 'Rejected') -- 新状态是取消或拒绝
-            AND d.OrderStatus NOT IN ('Cancelled', 'Rejected'); -- 旧状态不是取消或拒绝 (避免重复恢复)
+            WHERE i.Status = 'Cancelled' -- 新状态是取消
+            AND d.Status != 'Cancelled'; -- 旧状态不是取消 (避免重复恢复)
         END TRY
         BEGIN CATCH -- 添加 CATCH 块
             THROW; -- 传播错误，导致触发语句的事务回滚
@@ -44,7 +44,7 @@ BEGIN
     SET NOCOUNT ON;
 
     -- 检查订单状态是否从非 'Completed' 变为 'Completed'
-    IF UPDATE(OrderStatus)
+    IF UPDATE(Status)
     BEGIN
         BEGIN TRY -- 添加 TRY 块
             -- 根据设计文档，订单完成后，卖家信用分 +5 (如果评价系统也加分，需要协调)
@@ -58,8 +58,8 @@ BEGIN
             FROM [User] U
             JOIN inserted i ON U.UserID = i.SellerID
             JOIN deleted d ON i.OrderID = d.OrderID
-            WHERE i.OrderStatus = 'Completed' -- 新状态是完成
-            AND d.OrderStatus != 'Completed'; -- 旧状态不是完成 (避免重复增加)
+            WHERE i.Status = 'Completed' -- 新状态是完成
+            AND d.Status != 'Completed'; -- 旧状态不是完成 (避免重复增加)
         END TRY
         BEGIN CATCH -- 添加 CATCH 块
             THROW; -- 传播错误，导致触发语句的事务回滚

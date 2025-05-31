@@ -7,23 +7,23 @@
 DROP PROCEDURE IF EXISTS [sp_CreateEvaluation];
 GO
 CREATE PROCEDURE [sp_CreateEvaluation]
-    @OrderID INT,
-    @BuyerID INT,
+    @OrderID UNIQUEIDENTIFIER,
+    @BuyerID UNIQUEIDENTIFIER,
     @Rating INT,
-    @Comment NVARCHAR(1000) NULL
+    @Content NVARCHAR(500) NULL
 AS
 BEGIN
     SET NOCOUNT ON;
-    DECLARE @SellerID INT;
-    DECLARE @OrderStatus VARCHAR(50);
-    DECLARE @ProductID INT;
+    DECLARE @SellerID UNIQUEIDENTIFIER;
+    DECLARE @OrderStatus NVARCHAR(50);
+    DECLARE @ProductID UNIQUEIDENTIFIER;
     DECLARE @ErrorMessage NVARCHAR(4000);
 
     BEGIN TRY
         BEGIN TRANSACTION;
 
         -- 检查订单是否存在，是否属于该买家，以及是否已完成
-        SELECT @OrderStatus = O.OrderStatus, @SellerID = O.SellerID, @ProductID = O.ProductID
+        SELECT @OrderStatus = O.Status, @SellerID = O.SellerID, @ProductID = O.ProductID
         FROM [Order] O
         WHERE O.OrderID = @OrderID AND O.BuyerID = @BuyerID;
 
@@ -54,8 +54,8 @@ BEGIN
         END
 
         -- 插入评价
-        INSERT INTO [Evaluation] (OrderID, BuyerID, SellerID, ProductID, Rating, Comment, CreatedAt)
-        VALUES (@OrderID, @BuyerID, @SellerID, @ProductID, @Rating, @Comment, GETDATE());
+        INSERT INTO [Evaluation] (EvaluationID, OrderID, BuyerID, SellerID, Rating, Content, CreateTime)
+        VALUES (NEWID(), @OrderID, @BuyerID, @SellerID, @Rating, @Content, GETDATE());
 
         -- 卖家信用分更新逻辑已移至触发器 tr_Evaluation_AfterInsert_UpdateSellerCredit
 

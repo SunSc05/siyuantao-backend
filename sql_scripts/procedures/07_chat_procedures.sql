@@ -258,26 +258,9 @@ BEGIN
         END
         ELSE IF @visibleTo = 'both' AND (@userId = @senderId OR @userId = @receiverId) -- 允许发送者或接收者标记对双方都不可见（彻底删除视角）
         BEGIN
-             -- 如果是发送者操作，将 SenderVisible 和 ReceiverVisible 都设为 @isVisible
-             -- 如果是接收者操作，将 ReceiverVisible 和 SenderVisible 都设为 @isVisible
-             -- 这样任何一方标记为不可见，对双方都不可见（如果需要彻底删除效果）
-             -- 如果只是单方面逻辑删除，上面的 sender/receiver case 就足够了
-             -- 根据您说的"逻辑删除功能，需要在查询和更新消息的存储过程中考虑"，这里实现为单方面逻辑删除
-             -- 因此 'both' 选项在此处可能不需要，或者其逻辑需要进一步明确。
-             -- 如果需要彻底删除（双方都看不到），可以将以下逻辑修改为：
-             -- UPDATE [ChatMessage] SET SenderVisible = @isVisible, ReceiverVisible = @isVisible WHERE MessageID = @messageId;
-             -- 这里保持单方面修改的逻辑。
-
-             -- 暂时不处理 'both' 选项，或者明确其具体行为。
-             -- 如果需要实现彻底删除（双方都不可见），可以添加如下逻辑:
-              -- IF @userId = @senderId OR @userId = @receiverId
-              -- BEGIN
-              --     UPDATE [ChatMessage]
-              --     SET SenderVisible = @isVisible, ReceiverVisible = @isVisible
-              --     WHERE MessageID = @messageId;
-              -- END
-             RAISERROR('无效的可见性设置目标。', 16, 1); -- 暂时禁用 'both'
-             IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION; RETURN;
+             UPDATE [ChatMessage]
+             SET SenderVisible = @isVisible, ReceiverVisible = @isVisible
+             WHERE MessageID = @messageId;
         END
         ELSE
         BEGIN
