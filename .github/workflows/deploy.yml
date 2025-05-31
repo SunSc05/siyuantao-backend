@@ -33,7 +33,7 @@ jobs:
           echo "Changing to project directory: ${{ secrets.PROJECT_PATH }}"
           cd ${{ secrets.PROJECT_PATH }}
 
-          # --- 配置 Git 以信任主机 --- 
+          # --- 配置 Git 以信任主机 ---
           # 确保 GitHub 的主机密钥被服务器信任
           echo "Adding github.com to server's known_hosts..."
           ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null || echo "github.com already in known_hosts or failed to add, continuing..."
@@ -60,8 +60,8 @@ jobs:
           # --- 后续步骤 ---
           # 激活 Conda 虚拟环境
           echo "Activating virtual environment 'backend-py312'..."
-          # 确保 conda 已初始化并激活指定环境
-          source $(conda info --base)/etc/profile.d/conda.sh || { echo "Conda initialization failed or conda not found. Please ensure Conda is installed and initialized on the server."; exit 1; }
+          # 显式 source Conda 初始化脚本，确保 conda 命令可用
+          source /home/${{ secrets.SSH_USER }}/miniconda3/etc/profile.d/conda.sh || { echo "Conda initialization failed or conda.sh not found. Please ensure Conda is installed and initialized for ${{ secrets.SSH_USER }} user on the server."; exit 1; }
           conda activate backend-py312 || { echo "Conda environment 'backend-py312' activation failed. Please ensure the environment exists and is named correctly."; exit 1; }
 
           # 安装/更新 Python 依赖
