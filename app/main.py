@@ -154,8 +154,8 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 # 注册路由模块
 app.include_router(users.router, prefix="/api/v1")
 app.include_router(product_routes.router, prefix="/api/v1/products", tags=["Products"])
-# app.include_router(products.router, prefix="/api/v1/products", tags=["Products"]) # 暂时注释掉未创建的路由
-# app.include_router(orders.router, prefix="/api/v1/orders", tags=["Orders"]) # 暂时注释掉未创建的路由
+app.include_router(order.router, prefix="/api/v1/orders", tags=["Orders"])
+app.include_router(evaluation.router, prefix="/api/v1/evaluations", tags=["Evaluations"])
 app.include_router(auth.router, prefix="/api/v1")
 # ... 注册其他模块路由
 

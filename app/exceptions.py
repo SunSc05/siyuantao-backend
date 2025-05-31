@@ -55,26 +55,34 @@ class PermissionError(Exception):
 async def not_found_exception_handler(request: Request, exc: NotFoundError):
     return JSONResponse(
         status_code=status.HTTP_404_NOT_FOUND,
-        content={"message": exc.message}
+        content={"detail": exc.message}
     )
 
 async def integrity_exception_handler(request: Request, exc: IntegrityError):
+    # 捕获数据库完整性错误，例如唯一约束冲突
     return JSONResponse(
-        status_code=status.HTTP_409_CONFLICT, # Conflict
-        content={"message": exc.message}
+        status_code=status.HTTP_409_CONFLICT, # 冲突
+        content={"detail": str(exc)}
     )
 
 async def dal_exception_handler(request: Request, exc: DALError):
     # 捕获所有未被更具体处理器捕获的 DAL 错误
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        content={"message": f"An unexpected database error occurred: {exc.message}"}
+        content={"detail": str(exc)}
     )
 
-async def forbidden_exception_handler(request: Request, exc: PermissionError):
+async def forbidden_exception_handler(request: Request, exc: ForbiddenError):
     return JSONResponse(
         status_code=status.HTTP_403_FORBIDDEN,
-        content={"message": exc.message}
+        content={"detail": exc.message}
+    )
+
+async def generic_exception_handler(request: Request, exc: Exception):
+    # 捕获所有未被其他特定处理器捕获的通用异常
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={"detail": f"服务器内部错误: {exc}"}
     )
 
 # 映射 SQLSTATE 错误码到自定义异常 (在 dal/base.py 中使用)

@@ -1,7 +1,7 @@
 from typing import Optional
 from uuid import UUID
 from datetime import datetime
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 # 根据 SQL Server 的 UNIQUEIDENTIFIER 类型，使用 UUID
 # 根据 SQL Server 的 NVARCHAR 类型，使用 str
@@ -52,8 +52,13 @@ class OrderStatusUpdateSchema(BaseModel):
     Based on potential status update operations (e.g., confirm, complete, cancel).
     """
     status: str = Field(..., description="New status for the order")
-    # 可以根据需要添加其他字段，例如 cancel_reason
     cancel_reason: Optional[str] = Field(None, description="Reason for cancellation, required if status is 'Cancelled'")
+
+    @model_validator(mode='after')
+    def validate_cancellation_reason(self) -> 'OrderStatusUpdateSchema':
+        if self.status == 'Cancelled' and not self.cancel_reason:
+            raise ValueError("取消原因不能为空")
+        return self
 
     class Config:
         orm_mode = True

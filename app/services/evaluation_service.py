@@ -1,6 +1,6 @@
 import pyodbc
 from uuid import UUID
-from typing import Optional, List # Added List for potential future methods
+from typing import Optional, List, Dict, Any # Added Dict and Any
 
 from app.dal.evaluation_dal import EvaluationDAL # Assuming EvaluationDAL is in app.dal.evaluation_dal
 from app.schemas.evaluation_schemas import ( # Assuming evaluation-related Pydantic schemas are in app.schemas.evaluation_schemas
@@ -9,7 +9,7 @@ from app.schemas.evaluation_schemas import ( # Assuming evaluation-related Pydan
 )
 # If needed, import Order related schemas or services for validation (e.g., to check if order can be evaluated)
 # from app.services.order_service import OrderService 
-from app.exceptions import DALError, NotFoundError, ForbiddenError # 移除 ValueError
+from app.exceptions import DALError, NotFoundError, ForbiddenError, IntegrityError # Import IntegrityError
 
 class EvaluationService:
     """Service layer for evaluation management."""
@@ -30,7 +30,7 @@ class EvaluationService:
         conn: pyodbc.Connection,
         evaluation_data: EvaluationCreateSchema,
         buyer_id: UUID
-    ) -> EvaluationResponseSchema: # Assuming sp_CreateEvaluation doesn't return the full object, so we might need a get after create
+    ) -> EvaluationResponseSchema:
         """
         Creates a new evaluation for an order.
 
@@ -45,8 +45,9 @@ class EvaluationService:
         Raises:
             DALError: If there's an issue with database interaction.
             NotFoundError: If the order to be evaluated is not found.
-            ValueError: If input data is invalid (e.g., rating out of range, order already evaluated).
+            ValueError: If input data is invalid (e.g., rating out of range).
             ForbiddenError: If the user is not authorized to evaluate the order (e.g., not the buyer).
+            IntegrityError: If the order has already been evaluated.
         """
         try:
             # --- Business Logic Pre-checks (Examples) ---
@@ -66,16 +67,17 @@ class EvaluationService:
             #    if existing_evaluation:
             #        raise ValueError("This order has already been evaluated by you.")
             
-            # 3. Validate rating (e.g., 1-5). Pydantic schema might handle this, but good to have service layer validation too.
+            # 1. Validate rating (e.g., 1-5). Pydantic schema handles this, but service layer can add extra validation.
             if not (1 <= evaluation_data.rating <= 5):
-                raise ValueError("Rating must be between 1 and 5.") # 这里直接使用内置的 ValueError
+                # Although Pydantic schema has gt/le, this ensures robust service-level validation.
+                raise ValueError("评分必须在 1 到 5 之间。")
 
             # Call DAL to execute sp_CreateEvaluation
             # sp_CreateEvaluation might not return the created evaluation ID or details directly.
             # It might just perform the insert and raise SQL errors for issues.
             # Assuming DAL's create_evaluation returns the newly created evaluation ID or the full dictionary
             # If it returns the ID, fetch the full evaluation:
-            created_evaluation_data = await self.evaluation_dal.create_evaluation(
+            new_evaluation_data = await self.evaluation_dal.create_evaluation(
                 conn=conn,
                 order_id=evaluation_data.order_id,
                 buyer_id=buyer_id, # Pass the authenticated buyer_id
@@ -94,23 +96,17 @@ class EvaluationService:
             #     raise NotFoundError("Evaluation not found after creation.")
             # return evaluation
 
-            # Assuming DAL.create_evaluation now returns the full evaluation dictionary on success:
-            if not created_evaluation_data or not isinstance(created_evaluation_data, dict):
+            # DAL's create_evaluation now returns the full evaluation dictionary on success.
+            if not new_evaluation_data or not isinstance(new_evaluation_data, dict):
                 raise DALError("Evaluation creation failed: Unexpected response from database.")
 
             # Convert the dictionary result to the EvaluationResponseSchema
-            return EvaluationResponseSchema(**created_evaluation_data)
+            return EvaluationResponseSchema(**new_evaluation_data)
 
-        except pyodbc.Error as db_err:
-            # Log db_err
-            # Specific SQL errors from sp_CreateEvaluation (e.g., order not found, already evaluated) might be caught here.
-            # These could be translated into more specific service exceptions.
-            raise DALError(f"Database error during evaluation creation: {db_err}") from db_err
-        except (NotFoundError, ValueError, ForbiddenError, DALError): # 这里也直接使用内置的 ValueError
+        except (NotFoundError, ValueError, ForbiddenError, IntegrityError, DALError): # Catch IntegrityError here
             raise # Re-raise specific business logic or DAL errors
         except Exception as e:
-            # Log e
-            raise DALError(f"An unexpected error occurred during evaluation creation: {e}") from e
+            raise DALError(f"创建评价时发生意外错误: {e}") from e
 
     async def get_evaluations_by_product_id(
         self,

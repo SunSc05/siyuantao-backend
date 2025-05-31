@@ -2,7 +2,7 @@ import pyodbc
 from typing import Optional, Callable, Awaitable, List, Dict, Any
 from uuid import UUID
 
-from app.exceptions import DALError, NotFoundError, IntegrityError
+from app.exceptions import DALError, NotFoundError, IntegrityError, ForbiddenError
 
 class EvaluationDAL:
     """Data Access Layer for Evaluations."""
@@ -16,47 +16,39 @@ class EvaluationDAL:
                                 It should accept a SQL query string and parameters, 
                                 and return an optional list of tuples (rows).
         """
-        self.execute_query_func = execute_query_func
+        self._execute_query = execute_query_func
 
     async def create_evaluation(
         self,
         conn: pyodbc.Connection, 
-        order_id: int,
+        order_id: UUID,
         buyer_id: UUID,
         rating: int,
         comment: Optional[str]
-    ) -> None:
+    ) -> Dict[str, Any]:
         """
         Creates a new evaluation for an order by calling the sp_CreateEvaluation stored procedure.
-
-        Args:
-            conn: The database connection object.
-            order_id: The ID of the order being evaluated.
-            buyer_id: The ID of the buyer submitting the evaluation.
-            rating: The rating given by the buyer (1-5).
-            comment: Optional comment from the buyer.
-
-        Raises:
-            DALError: If the stored procedure execution fails.
+        Assumes sp_CreateEvaluation is modified to SELECT the newly created evaluation data.
         """
-        sql = "EXEC sp_CreateEvaluation @OrderID=?, @BuyerID=?, @Rating=?, @Comment=?"
-        params = (order_id, str(buyer_id), rating, comment)
-        
+        sql = "{CALL sp_CreateEvaluation (?, ?, ?, ?)}"
+        params = (str(order_id), str(buyer_id), rating, comment)
+
         try:
-            await self.execute_query_func(conn, sql, params, fetchone=False, fetchall=False)
+            result = await self._execute_query(conn, sql, params, fetchone=True)
+            if not result or result.get("EvaluationID") is None:
+                raise DALError("创建评价失败，未返回评价ID")
+            return result
         except pyodbc.Error as e:
-            # Log the error e
-            # Convert pyodbc.Error to a more generic DALError or a specific one
-            # The sp_CreateEvaluation procedure itself raises errors for business logic violations (e.g., order not found, already evaluated)
-            # Those errors will be caught here if they are SQL Server errors (e.g., RAISERROR with severity > 10)
-            error_message = f"Database error during evaluation creation for order {order_id}: {e}"
-            # Consider logging the full error details here
-            raise DALError(error_message) from e
+            error_msg = str(e)
+            if "50001" in error_msg:
+                raise NotFoundError(f"评价创建失败: {error_msg}") from e
+            elif "50002" in error_msg:
+                raise IntegrityError(f"评价创建失败: {error_msg}") from e
+            elif "50003" in error_msg:
+                raise ForbiddenError(f"评价创建失败: {error_msg}") from e
+            raise DALError(f"评价创建异常: {error_msg}") from e
         except Exception as e:
-            # Catch any other unexpected errors
-            error_message = f"An unexpected error occurred while creating evaluation for order {order_id}: {e}"
-            # Consider logging the full error details here
-            raise DALError(error_message) from e
+            raise DALError(f"评价创建时发生意外错误: {e}") from e
 
     async def get_evaluation_by_id(
         self,
@@ -64,14 +56,16 @@ class EvaluationDAL:
         evaluation_id: UUID
     ) -> Optional[Dict[str, Any]]:
         """Fetches a single evaluation by its ID."""
-        sql = "{CALL sp_GetEvaluationByID(?)}"
-        params = (evaluation_id,)
+        sql = "{CALL sp_GetEvaluationById (?)}"
+        params = (str(evaluation_id),)
         try:
-            result = await self.execute_query_func(conn, sql, params, fetchone=True)
-            # Assuming SP returns a dictionary on success or None if not found
-            return result if isinstance(result, dict) else None
-        except pyodbc.Error as ex:
-            raise DALError(f"Database error fetching evaluation by ID: {ex}") from ex
+            result = await self._execute_query(conn, sql, params, fetchone=True)
+            return result
+        except pyodbc.Error as e:
+            error_msg = str(e)
+            raise DALError(f"获取评价失败: {error_msg}") from e
+        except Exception as e:
+            raise DALError(f"获取评价时发生意外错误: {e}") from e
 
     async def get_evaluations_by_product_id(
         self,
@@ -79,14 +73,16 @@ class EvaluationDAL:
         product_id: UUID
     ) -> List[Dict[str, Any]]:
         """Fetches all evaluations for a specific product."""
-        sql = "{CALL sp_GetEvaluationsByProductID(?)}"
-        params = (product_id,)
+        sql = "{CALL sp_GetEvaluationsByProductId (?)}"
+        params = (str(product_id),)
         try:
-            result = await self.execute_query_func(conn, sql, params, fetchall=True)
-            # Assuming SP returns a list of dictionaries or an empty list
-            return result if isinstance(result, list) else []
-        except pyodbc.Error as ex:
-            raise DALError(f"Database error fetching evaluations by product ID: {ex}") from ex
+            results = await self._execute_query(conn, sql, params, fetchall=True)
+            return results
+        except pyodbc.Error as e:
+            error_msg = str(e)
+            raise DALError(f"获取商品评价失败: {error_msg}") from e
+        except Exception as e:
+            raise DALError(f"获取商品评价时发生意外错误: {e}") from e
 
     async def get_evaluations_by_buyer_id(
         self,
@@ -94,14 +90,16 @@ class EvaluationDAL:
         buyer_id: UUID
     ) -> List[Dict[str, Any]]:
         """Fetches all evaluations made by a specific buyer."""
-        sql = "{CALL sp_GetEvaluationsByBuyerID(?)}"
-        params = (buyer_id,)
+        sql = "{CALL sp_GetEvaluationsByBuyerId (?)}"
+        params = (str(buyer_id),)
         try:
-            result = await self.execute_query_func(conn, sql, params, fetchall=True)
-            # Assuming SP returns a list of dictionaries or an empty list
-            return result if isinstance(result, list) else []
-        except pyodbc.Error as ex:
-            raise DALError(f"Database error fetching evaluations by buyer ID: {ex}") from ex
+            results = await self._execute_query(conn, sql, params, fetchall=True)
+            return results
+        except pyodbc.Error as e:
+            error_msg = str(e)
+            raise DALError(f"获取买家评价失败: {error_msg}") from e
+        except Exception as e:
+            raise DALError(f"获取买家评价时发生意外错误: {e}") from e
 
 # Example of how this DAL might be used (typically in a Service layer):
 # async def example_usage(db_conn_provider, order_id, buyer_id, rating, comment):

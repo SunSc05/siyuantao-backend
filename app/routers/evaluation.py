@@ -44,6 +44,69 @@ async def create_new_evaluation(
         # 考虑在这里添加日志记录
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"服务器内部错误: {e}")
 
+@router.get("/{evaluation_id}", response_model=EvaluationResponseSchema)
+async def get_evaluation_by_id_route(
+    evaluation_id: UUID, # Path parameter
+    conn: pyodbc.Connection = Depends(get_db_connection),
+    evaluation_service: EvaluationService = Depends(get_evaluation_service)
+):
+    """
+    根据评价ID获取单个评价详情。
+    """
+    try:
+        evaluation = await evaluation_service.get_evaluation_by_id(conn, evaluation_id)
+        if not evaluation:
+            raise NotFoundError(f"评价ID {evaluation_id} 未找到")
+        return evaluation
+    except NotFoundError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except DALError as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"数据库操作失败: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"服务器内部错误: {e}")
+
+@router.get("/product/{product_id}", response_model=List[EvaluationResponseSchema])
+async def get_evaluations_by_product_id_route(
+    product_id: UUID, # Path parameter
+    conn: pyodbc.Connection = Depends(get_db_connection),
+    evaluation_service: EvaluationService = Depends(get_evaluation_service)
+):
+    """
+    根据商品ID获取该商品的所有评价。
+    """
+    try:
+        evaluations = await evaluation_service.get_evaluations_by_product_id(conn, product_id)
+        if not evaluations:
+            raise NotFoundError(f"未找到商品 {product_id} 的任何评价")
+        return evaluations
+    except NotFoundError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except DALError as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"数据库操作失败: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"服务器内部错误: {e}")
+
+@router.get("/buyer/{buyer_id}", response_model=List[EvaluationResponseSchema])
+async def get_evaluations_by_buyer_id_route(
+    buyer_id: UUID, # Path parameter
+    conn: pyodbc.Connection = Depends(get_db_connection),
+    evaluation_service: EvaluationService = Depends(get_evaluation_service)
+):
+    """
+    根据买家ID获取该买家的所有评价。
+    """
+    try:
+        evaluations = await evaluation_service.get_evaluations_by_buyer_id(conn, buyer_id)
+        if not evaluations:
+            raise NotFoundError(f"未找到买家 {buyer_id} 的任何评价")
+        return evaluations
+    except NotFoundError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except DALError as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"数据库操作失败: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"服务器内部错误: {e}")
+
 # 您可以在此添加更多评价相关的路由，例如：
 # - 获取某个商品的所有评价
 # - 获取用户的所有评价

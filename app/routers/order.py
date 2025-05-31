@@ -1,7 +1,8 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Path
+from fastapi import APIRouter, Depends, HTTPException, status, Path, Body, Query
 from typing import List
 import pyodbc
 import uuid # For User ID and Order ID
+import fastapi
 
 # 假设的Schema路径，请根据您的项目结构调整
 from app.schemas.order_schemas import OrderCreateSchema, OrderResponseSchema, OrderStatusUpdateSchema 
@@ -12,10 +13,7 @@ from app.dependencies import get_current_user, get_db_connection, get_order_serv
 # 假设的异常类路径，请根据您的项目结构调整
 from app.exceptions import IntegrityError, ForbiddenError, NotFoundError, DALError
 
-router = APIRouter(
-    prefix="/orders",
-    tags=["Orders"]
-)
+router = APIRouter()
 
 @router.post("/", response_model=OrderResponseSchema, status_code=status.HTTP_201_CREATED)
 async def create_new_order(
@@ -75,7 +73,7 @@ async def update_order_status_route(
             order_id=order_id, 
             new_status=status_update.status, 
             user_id=user_id,
-            # 根据业务逻辑，可能还需要其他参数，如角色，在service层判断
+            cancel_reason=status_update.cancel_reason # Pass cancel_reason to service
         )
         return updated_order
     except IntegrityError as e:
@@ -96,7 +94,9 @@ async def get_my_orders(
     current_user: dict = Depends(get_current_user),
     conn: pyodbc.Connection = Depends(get_db_connection),
     order_service: OrderService = Depends(get_order_service),
-    # 可以添加分页参数, e.g., skip: int = 0, limit: int = 100
+    status: str = Query(None), # 添加status查询参数
+    page_number: int = Query(1, ge=1), # 添加page_number查询参数
+    page_size: int = Query(10, ge=1, le=100) # 添加page_size查询参数
 ):
     """
     获取当前登录用户的所有订单列表 (作为买家或卖家)。
@@ -108,9 +108,39 @@ async def get_my_orders(
 
     try:
         user_id = uuid.UUID(user_id_str)
-        orders = await order_service.get_orders_by_user(conn, user_id)
+        # 假设这里 is_seller 默认为 False，如果需要获取卖家订单，可能需要另一个路由或额外的查询参数
+        orders = await order_service.get_orders_by_user(conn, user_id, is_seller=False, status=status, page_number=page_number, page_size=page_size)
         return orders
     except NotFoundError as e: # 虽然通常返回空列表，但以防service层抛出
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except DALError as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"数据库操作失败: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"服务器内部错误: {e}")
+
+@router.get("/{order_id}", response_model=OrderResponseSchema) # Added GET for single order retrieval
+async def get_order_by_id_route(
+    order_id: uuid.UUID = Path(..., title="The ID of the order to retrieve"),
+    current_user: dict = Depends(get_current_user),
+    conn: pyodbc.Connection = Depends(get_db_connection),
+    order_service: OrderService = Depends(get_order_service)
+):
+    """
+    根据ID获取单个订单详情。
+    """
+    user_id_str = current_user.get("user_id")
+    if not user_id_str:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="无法获取当前用户信息")
+
+    try:
+        user_id = uuid.UUID(user_id_str)
+        order = await order_service.get_order_by_id(conn, order_id, requesting_user_id=user_id)
+        if not order:
+            raise NotFoundError("订单未找到")
+        return order
+    except ForbiddenError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+    except NotFoundError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
     except DALError as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"数据库操作失败: {e}")
@@ -149,6 +179,8 @@ async def delete_order_route(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
     except ValueError as e: # 例如，订单状态不允许删除
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except IntegrityError as e: # Add IntegrityError handling
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
     except DALError as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"数据库操作失败: {e}")
     except Exception as e:
@@ -187,6 +219,108 @@ async def cancel_order_route(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
     except ValueError as e: # 例如，订单状态不允许取消
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except IntegrityError as e: # Add IntegrityError handling
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+    except DALError as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"数据库操作失败: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"服务器内部错误: {e}")
+
+@router.put("/{order_id}/confirm", response_model=OrderResponseSchema)
+async def confirm_order_route(
+    order_id: uuid.UUID = Path(..., title="The ID of the order to confirm"),
+    current_user: dict = Depends(get_current_user),
+    conn: pyodbc.Connection = Depends(get_db_connection),
+    order_service: OrderService = Depends(get_order_service)
+):
+    """
+    确认一个订单。
+    """
+    user_id_str = current_user.get("user_id")
+    if not user_id_str:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="无法获取当前用户信息")
+    
+    try:
+        user_id = uuid.UUID(user_id_str)
+        updated_order = await order_service.confirm_order(conn, order_id, user_id)
+        return updated_order
+    except IntegrityError as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except ForbiddenError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+    except NotFoundError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except DALError as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"数据库操作失败: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"服务器内部错误: {e}")
+
+
+@router.put("/{order_id}/complete", response_model=OrderResponseSchema)
+async def complete_order_route(
+    order_id: uuid.UUID = Path(..., title="The ID of the order to complete"),
+    current_user: dict = Depends(get_current_user),
+    conn: pyodbc.Connection = Depends(get_db_connection),
+    order_service: OrderService = Depends(get_order_service)
+):
+    """
+    完成一个订单。
+    """
+    user_id_str = current_user.get("user_id")
+    if not user_id_str:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="无法获取当前用户信息")
+
+    try:
+        user_id = uuid.UUID(user_id_str)
+        updated_order = await order_service.complete_order(conn, order_id, user_id)
+        return updated_order
+    except IntegrityError as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except ForbiddenError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+    except NotFoundError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except DALError as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"数据库操作失败: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"服务器内部错误: {e}")
+
+
+@router.put("/{order_id}/reject", response_model=OrderResponseSchema)
+async def reject_order_route(
+    order_id: uuid.UUID = Path(..., title="The ID of the order to reject"),
+    current_user: dict = Depends(get_current_user),
+    conn: pyodbc.Connection = Depends(get_db_connection),
+    order_service: OrderService = Depends(get_order_service),
+    rejection_reason_data: dict = Body(..., embed=True) # Assuming reason is in body
+):
+    """
+    拒绝一个订单。
+    """
+    user_id_str = current_user.get("user_id")
+    if not user_id_str:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="无法获取当前用户信息")
+
+    rejection_reason = rejection_reason_data.get("rejection_reason")
+    if not rejection_reason:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="拒绝原因不能为空")
+
+    try:
+        user_id = uuid.UUID(user_id_str)
+        updated_order = await order_service.reject_order(conn, order_id, user_id, rejection_reason)
+        return updated_order
+    except IntegrityError as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except ForbiddenError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+    except NotFoundError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
     except DALError as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"数据库操作失败: {e}")
     except Exception as e:

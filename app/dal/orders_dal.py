@@ -57,7 +57,7 @@ class OrdersDAL:
                 raise NotFoundError(f"创建订单失败: {error_msg}") from e
             elif "50003" in error_msg: # 商品库存不足
                 raise IntegrityError(f"创建订单失败: {error_msg}") from e
-            raise DALError(f"数据库操作失败，无法创建订单: {error_msg}") from e
+            raise DALError(f"无法创建订单: {error_msg}") from e
         except Exception as e:
             # Catch any other unexpected errors during DAL execution
             raise DALError(f"创建订单时发生意外错误: {e}") from e
@@ -84,7 +84,7 @@ class OrdersDAL:
                 raise NotFoundError(f"确认订单失败: {error_msg}") from e
             elif "50005" in error_msg: # 订单状态不是"待处理"
                 raise IntegrityError(f"确认订单失败: {error_msg}") from e
-            raise DALError(f"数据库操作失败，无法确认订单 {order_id}: {error_msg}") from e
+            raise DALError(f"无法确认订单 {order_id}: {error_msg}") from e
         except Exception as e:
             raise DALError(f"确认订单 {order_id} 时发生意外错误: {e}") from e
 
@@ -113,7 +113,7 @@ class OrdersDAL:
                 raise ForbiddenError(f"完成订单失败: {error_msg}") from e
             elif "50008" in error_msg: # 订单状态不正确
                 raise IntegrityError(f"完成订单失败: {error_msg}") from e
-            raise DALError(f"数据库操作失败，无法完成订单 {order_id}: {error_msg}") from e
+            raise DALError(f"无法完成订单 {order_id}: {error_msg}") from e
         except Exception as e:
             raise DALError(f"完成订单 {order_id} 时发生意外错误: {e}") from e
 
@@ -145,7 +145,7 @@ class OrdersDAL:
             error_msg = str(e)
             # Add specific error code checks for sp_RejectOrder if available
             # These specific error codes mapping might ideally live in the generic executor
-            raise DALError(f"数据库操作失败，无法拒绝订单 {order_id}: {error_msg}") from e
+            raise DALError(f"无法拒绝订单 {order_id}: {error_msg}") from e
         except Exception as e:
             raise DALError(f"拒绝订单 {order_id} 时发生意外错误: {e}") from e
 
@@ -170,7 +170,7 @@ class OrdersDAL:
         except pyodbc.Error as e:
             error_msg = str(e)
             # Add specific error code checks for sp_CancelOrder if available
-            raise DALError(f"数据库操作失败，无法取消订单 {order_id}: {error_msg}") from e
+            raise DALError(f"无法取消订单 {order_id}: {error_msg}") from e
         except Exception as e:
             raise DALError(f"取消订单 {order_id} 时发生意外错误: {e}") from e
 
@@ -197,7 +197,7 @@ class OrdersDAL:
             raise e
         except pyodbc.Error as e:
             error_msg = str(e)
-            raise DALError(f"数据库操作失败，无法获取用户 {user_id} 的订单: {error_msg}") from e
+            raise DALError(f"无法获取用户 {user_id} 的订单: {error_msg}") from e
         except Exception as e:
             raise DALError(f"获取用户 {user_id} 订单时发生意外错误: {e}") from e
 
@@ -223,6 +223,6 @@ class OrdersDAL:
         except pyodbc.Error as e:
             error_msg = str(e)
             # Add specific error code checks if sp_GetOrderById throws errors on not found
-            raise DALError(f"数据库操作失败，无法获取订单 {order_id}: {error_msg}") from e
+            raise DALError(f"无法获取订单 {order_id}: {error_msg}") from e
         except Exception as e:
             raise DALError(f"获取订单 {order_id} 时发生意外错误: {e}") from e

@@ -234,6 +234,27 @@ async def test_get_order_by_id_not_found(
         fetchone=True # Assuming SP returns a single row result
     )
 
+@pytest.mark.asyncio
+async def test_get_order_by_id_db_error(
+    orders_dal: OrdersDAL,
+    mock_db_connection: MagicMock,
+    mock_execute_query_func: AsyncMock
+):
+    """Test fetching an order by ID failing due to a database error."""
+    order_id = uuid4()
+    error_msg = "[SQLSTATE 08S01] DB connection error"
+    mock_execute_query_func.side_effect = pyodbc.Error(error_msg)
+
+    with pytest.raises(DALError) as excinfo:
+        await orders_dal.get_order_by_id(mock_db_connection, order_id)
+    assert "数据库操作失败" in str(excinfo.value)
+    mock_execute_query_func.assert_called_once_with(
+        mock_db_connection,
+        "{CALL sp_GetOrderById (?)}",
+        (str(order_id),), # Ensure UUID is converted to string for DAL call
+        fetchone=True
+    )
+
 # get_orders_by_user 方法
 @pytest.mark.asyncio
 async def test_get_orders_by_user_buyer_found(
@@ -307,93 +328,80 @@ async def test_get_orders_by_user_buyer_found(
 
 @pytest.mark.asyncio
 async def test_get_orders_by_user_seller_found(
-    orders_dal: OrdersDAL, # Update type hint
-    mock_order_response_schema: OrderResponseSchema, # Use fixture
-    mock_db_connection: MagicMock, # Inject mock_db_connection fixture
-    mock_execute_query_func: AsyncMock # Inject execute_query mock
+    orders_dal: OrdersDAL,
+    mock_db_connection: MagicMock,
+    mock_execute_query_func: AsyncMock
 ):
-    """Test fetching orders by seller ID when orders exist."""
-    # Arrange
-    user_id = mock_order_response_schema.seller_id
-    is_seller = True
-    status = "Pending"
-
-    # Simulate execute_query_func returning a list of order dictionaries filtered by status
-    mock_dal_return_value = [
+    user_id = uuid4()
+    mock_orders = [
         {
-            'OrderID': str(uuid4()),
-            'SellerID': str(user_id),
-            'BuyerID': str(uuid4()),
-            'ProductID': str(uuid4()),
-            'Quantity': 5,
-            'ShippingAddress': 'Addr3',
-            'ContactPhone': '333',
-            'TotalPrice': 50.00,
-            'Status': 'Pending',
-            'CreatedAt': datetime.now(timezone.utc).replace(tzinfo=None),
-            'UpdatedAt': datetime.now(timezone.utc).replace(tzinfo=None),
-            'CompleteTime': None,
-            'CancelTime': None,
-            'CancelReason': None
+            "OrderID": str(uuid4()),
+            "SellerID": str(user_id),
+            "BuyerID": str(uuid4()),
+            "ProductID": str(uuid4()),
+            "Quantity": 1,
+            "ShippingAddress": "123 Seller St",
+            "ContactPhone": "555-SELL",
+            "TotalPrice": 200.0,
+            "Status": "Confirmed",
+            "CreatedAt": datetime.now(timezone.utc).isoformat(),
+            "UpdatedAt": datetime.now(timezone.utc).isoformat(),
+            "CompleteTime": None,
+            "CancelTime": None,
+            "CancelReason": None
         }
     ]
-    mock_execute_query_func.return_value = mock_dal_return_value # Simulate list of dictionaries return
+    mock_execute_query_func.return_value = mock_orders
 
-    # Act
-    # Call the DAL method, passing the mock connection and parameters
-    orders = await orders_dal.get_orders_by_user(mock_db_connection, user_id, is_seller, status=status) # Pass mock_db_connection
+    orders = await orders_dal.get_orders_by_user(
+        mock_db_connection, user_id, is_seller=True, status="Confirmed", page_number=1, page_size=10
+    )
 
-    # Assert that the method returned the expected list of dictionaries
-    assert orders == mock_dal_return_value
-
-    # Verify the injected execute_query_func was called with the correct parameters
+    assert orders == mock_orders
     mock_execute_query_func.assert_called_once_with(
-        mock_db_connection, # Verify conn is passed
-        "{CALL sp_GetOrdersByUser (?, ?, ?, ?, ?)}", # Updated SQL format
-        (
-            user_id, # Pass UUID object directly
-            is_seller,
-            status, # Pass status
-            1, # Default page_number is 1
-            10 # Default page_size is 10
-        ),
-        fetchall=True # Assuming SP returns multiple rows
+        mock_db_connection,
+        "{CALL sp_GetOrdersByUser (?, ?, ?, ?, ?)}",
+        (str(user_id), True, "Confirmed", 1, 10),
+        fetchall=True
     )
 
 @pytest.mark.asyncio
 async def test_get_orders_by_user_seller_not_found(
-    orders_dal: OrdersDAL, # Update type hint
-    mock_db_connection: MagicMock, # Inject mock_db_connection fixture
-    mock_execute_query_func: AsyncMock # Inject execute_query mock
+    orders_dal: OrdersDAL,
+    mock_db_connection: MagicMock,
+    mock_execute_query_func: AsyncMock
 ):
-    """Test fetching orders by seller ID when no orders are found."""
-    # Arrange
     user_id = uuid4()
-    is_seller = True
+    mock_execute_query_func.return_value = [] # No orders found
 
-    # Simulate execute_query_func returning an empty list (no orders found)
-    mock_execute_query_func.return_value = []
-
-    # Act
-    # Call the DAL method, passing the mock connection and parameters
-    orders = await orders_dal.get_orders_by_user(mock_db_connection, user_id, is_seller) # Pass mock_db_connection
-
-    # Assert that the method returned an empty list
-    assert orders == []
-
-    # Verify the injected execute_query_func was called with the correct parameters
-    mock_execute_query_func.assert_called_once_with(
-        mock_db_connection, # Verify conn is passed
-        "{CALL sp_GetOrdersByUser (?, ?, ?, ?, ?)}", # Updated SQL format
-        (
-            user_id, # Pass UUID object directly
-            is_seller,
-            None, # Default status is None
-            1, # Default page_number is 1
-            10 # Default page_size is 10
-        ),
-        fetchall=True # Assuming SP returns multiple rows
+    orders = await orders_dal.get_orders_by_user(
+        mock_db_connection, user_id, is_seller=True, status="Pending", page_number=1, page_size=10
     )
+
+    assert orders == []
+    mock_execute_query_func.assert_called_once_with(
+        mock_db_connection,
+        "{CALL sp_GetOrdersByUser (?, ?, ?, ?, ?)}",
+        (str(user_id), True, "Pending", 1, 10),
+        fetchall=True
+    )
+
+@pytest.mark.asyncio
+async def test_get_orders_by_user_seller_db_error(
+    orders_dal: OrdersDAL,
+    mock_db_connection: MagicMock,
+    mock_execute_query_func: AsyncMock
+):
+    user_id = uuid4()
+    error_msg = "[SQLSTATE 08S01] Another DB error for get_orders_by_user"
+    mock_execute_query_func.side_effect = pyodbc.Error(error_msg)
+
+    with pytest.raises(DALError) as excinfo:
+        await orders_dal.get_orders_by_user(
+            mock_db_connection, user_id, is_seller=True, status="Confirmed", page_number=1, page_size=10
+        )
+    assert "数据库操作失败" in str(excinfo.value)
+    mock_execute_query_func.assert_called_once()
 
 # update_order_status 方法 (涵盖 confirm, complete)
 # @pytest.mark.asyncio
@@ -526,377 +534,164 @@ async def test_cancel_order_db_error(
 # delete_order 方法 (已移除，因为 OrdersDAL 中没有 delete_order 方法，改为测试 complete_order)
 @pytest.mark.asyncio
 async def test_complete_order_success(
-    orders_dal: OrdersDAL, # Update type hint
-    mock_db_connection: MagicMock, # Inject mock_db_connection fixture
-    mock_execute_query_func: AsyncMock # Inject execute_query mock
+    orders_dal: OrdersDAL,
+    mock_db_connection: MagicMock,
+    mock_execute_query_func: AsyncMock
 ):
-    """Test successful order completion."""
-    # Arrange
     order_id = uuid4()
-    actor_id = uuid4() # User performing the completion (buyer or admin)
+    actor_id = uuid4() # Could be buyer or admin
+    mock_execute_query_func.return_value = None
 
-    # Simulate execute_query_func returning success indicator (e.g., OperationResultCode 0)
-    mock_execute_query_func.return_value = {'OperationResultCode': 0, '': 'Order completed successfully.'} # Simulate success dictionary
+    await orders_dal.complete_order(mock_db_connection, order_id, actor_id)
 
-    # Act
-    # Call the DAL method, passing the mock connection and parameters
-    success = await orders_dal.complete_order(mock_db_connection, order_id, actor_id) # Pass mock_db_connection
-
-    # Assert that the method returned True
-    assert success is True
-
-    # Verify the injected execute_query_func was called with the correct parameters
     mock_execute_query_func.assert_called_once_with(
-        mock_db_connection, # Verify conn is passed
-        "{CALL sp_CompleteOrder(?, ?)}",
-        (order_id, actor_id), # Pass UUID objects directly
-        fetchone=True # Assuming SP returns a single row result
+        mock_db_connection,
+        "{CALL sp_CompleteOrder (?, ?)}",
+        (str(order_id), str(actor_id)),
+        fetchone=False
     )
 
 @pytest.mark.asyncio
 async def test_complete_order_not_found(
-    orders_dal: OrdersDAL, # Update type hint
-    mock_db_connection: MagicMock, # Inject mock_db_connection fixture
-    mock_execute_query_func: AsyncMock # Inject execute_query mock
+    orders_dal: OrdersDAL,
+    mock_db_connection: MagicMock,
+    mock_execute_query_func: AsyncMock
 ):
-    """Test order completion when the order does not exist or cannot be completed by the actor.""" # Added actor constraint
-    # Arrange
     order_id = uuid4()
     actor_id = uuid4()
+    error_msg = "[SQLSTATE 50006] 订单不存在"
+    mock_execute_query_func.side_effect = pyodbc.Error(error_msg)
 
-    # Simulate execute_query_func returning not found error (e.g., OperationResultCode -1)
-    mock_execute_query_func.return_value = {'OperationResultCode': -1, '': 'Order not found or cannot be completed.'} # Simulate error dictionary
-
-    # Act & Assert: Expecting NotFoundError (as per the DAL's error mapping)
-    with pytest.raises(NotFoundError, match=f"Order with ID {order_id} not found for completion."):
-         await orders_dal.complete_order(mock_db_connection, order_id, actor_id) # Pass mock_db_connection
-
-    # Verify the injected execute_query_func was called with the correct parameters
-    mock_execute_query_func.assert_called_once_with(
-        mock_db_connection, # Verify conn is passed
-        "{CALL sp_CompleteOrder(?, ?)}",
-        (order_id, actor_id), # Pass UUID objects directly
-        fetchone=True
-    )
-
-
-# --- Additional tests from original code, updated with fixtures and conn --- #
+    with pytest.raises(NotFoundError) as excinfo:
+        await orders_dal.complete_order(mock_db_connection, order_id, actor_id)
+    assert error_msg in str(excinfo.value)
+    mock_execute_query_func.assert_called_once()
 
 @pytest.mark.asyncio
-async def test_create_order_invalid_quantity(orders_dal: OrdersDAL, mock_order_create_schema: OrderCreateSchema, mock_db_connection: MagicMock, mock_execute_query_func: AsyncMock):
-    """测试数量为0或负数的情况应抛出ValueError。"""
-    buyer_id = uuid4()
-    # Modify schema for this test case
-    invalid_quantity_schema = mock_order_create_schema.model_copy(update={'quantity': 0}) # Use model_copy
+async def test_complete_order_forbidden(
+    orders_dal: OrdersDAL,
+    mock_db_connection: MagicMock,
+    mock_execute_query_func: AsyncMock
+):
+    order_id = uuid4()
+    actor_id = uuid4()
+    error_msg = "[SQLSTATE 50007] 您无权完成此订单"
+    mock_execute_query_func.side_effect = pyodbc.Error(error_msg)
 
-    # The validation should happen before the DAL call, so the DAL method shouldn't be called.
-    # However, the original test structure seems to test the DAL's handling of invalid data if it were passed.
-    # If the validation is in the Service/API layer, this DAL test might be redundant or need adjustment.
-    # Assuming this test verifies DAL's robustness if invalid data bypasses earlier validation:
-
-    # Simulate the SP returning an error for invalid quantity
-    mock_execute_query_func.return_value = {'OperationResultCode': -1, '': 'Invalid quantity.'} # Simulate error dictionary
-
-    with pytest.raises(DALError, match="Error creating order: Invalid quantity."):
-         await orders_dal.create_order(
-             mock_db_connection, # Pass mock_db_connection
-             buyer_id,
-             invalid_quantity_schema.product_id,
-             invalid_quantity_schema.quantity,
-             invalid_quantity_schema.shipping_address,
-             invalid_quantity_schema.contact_phone
-         )
-
-    mock_execute_query_func.assert_called_once_with(
-        mock_db_connection,
-        "{CALL sp_CreateOrder (?, ?, ?, ?, ?)}", # Updated SQL format
-        (
-            str(buyer_id), # Pass UUID as string
-            str(invalid_quantity_schema.product_id), # Pass UUID as string
-            invalid_quantity_schema.quantity,
-            invalid_quantity_schema.shipping_address,
-            invalid_quantity_schema.contact_phone
-        ),
-        fetchone=True
-    )
+    with pytest.raises(ForbiddenError) as excinfo:
+        await orders_dal.complete_order(mock_db_connection, order_id, actor_id)
+    assert error_msg in str(excinfo.value)
+    mock_execute_query_func.assert_called_once()
 
 @pytest.mark.asyncio
-async def test_get_order_by_id_invalid_format(orders_dal: OrdersDAL, mock_db_connection: MagicMock, mock_execute_query_func: AsyncMock):
-    """测试非UUID格式的ID应抛出ValueError。"""
-    invalid_order_id_str = "not-a-uuid"
+async def test_complete_order_invalid_status(
+    orders_dal: OrdersDAL,
+    mock_db_connection: MagicMock,
+    mock_execute_query_func: AsyncMock
+):
+    order_id = uuid4()
+    actor_id = uuid4()
+    error_msg = "[SQLSTATE 50008] 订单状态不正确"
+    mock_execute_query_func.side_effect = pyodbc.Error(error_msg)
 
-    # The validation for UUID format should ideally happen before the DAL call.
-    # If it reaches here, it implies the DAL needs to handle potential non-UUID input or the test is for boundary conditions.
-    # Assuming this test verifies DAL's handling if invalid data is passed:
-
-    # Simulate execute_query_func raising an error due to invalid parameter type
-    mock_execute_query_func.side_effect = pyodbc.ProgrammingError("Invalid parameter type")
-
-    # The DAL should catch pyodbc errors and raise DALError.
-    with pytest.raises(DALError, match="Error fetching order by ID: Invalid parameter type"):
-         # Pass mock_db_connection and invalid ID (as string, as that's what the test provides)
-        await orders_dal.get_order_by_id(mock_db_connection, invalid_order_id_str) # Pass mock_db_connection
-
-    # Verify execute_query_func was called (even with invalid data, the call might still happen)
-    # Check the arguments passed to the mock - they should be the raw invalid input
-    mock_execute_query_func.assert_called_once_with(
-        mock_db_connection,
-        "{CALL sp_GetOrderById (?)}", # Corrected SP name
-        (invalid_order_id_str,),
-        fetchone=True
-    )
-
+    with pytest.raises(IntegrityError) as excinfo:
+        await orders_dal.complete_order(mock_db_connection, order_id, actor_id)
+    assert error_msg in str(excinfo.value)
+    mock_execute_query_func.assert_called_once()
 
 @pytest.mark.asyncio
-async def test_create_order_zero_or_negative_price(orders_dal: OrdersDAL, mock_order_create_schema: OrderCreateSchema, mock_db_connection: MagicMock, mock_execute_query_func: AsyncMock):
-    """测试总价为0或负数的情况应抛出ValueError（如果SP层面检查）。"""
-    buyer_id = uuid4()
-    # Modify schema for this test case
-    invalid_price_schema = mock_order_create_schema.model_copy(update={'total_price': 0.0}) # Use model_copy
+async def test_complete_order_db_error(
+    orders_dal: OrdersDAL,
+    mock_db_connection: MagicMock,
+    mock_execute_query_func: AsyncMock
+):
+    order_id = uuid4()
+    actor_id = uuid4()
+    error_msg = "[SQLSTATE 08S01] General DB error"
+    mock_execute_query_func.side_effect = pyodbc.Error(error_msg)
 
-    # Assuming validation happens in the Service/API layer, but testing DAL robustness.
+    with pytest.raises(DALError) as excinfo:
+        await orders_dal.complete_order(mock_db_connection, order_id, actor_id)
+    assert "数据库操作失败" in str(excinfo.value)
+    mock_execute_query_func.assert_called_once()
 
-    # Simulate SP returning an error for invalid total price
-    mock_execute_query_func.return_value = {'OperationResultCode': -1, '': 'Invalid total price.'} # Simulate error dictionary
-
-    with pytest.raises(DALError, match="Error creating order: Invalid total price."):
-        await orders_dal.create_order(
-            mock_db_connection,
-            buyer_id,
-            invalid_price_schema.product_id,
-            invalid_price_schema.quantity,
-            invalid_price_schema.shipping_address,
-            invalid_price_schema.contact_phone
-        )
-    
-    mock_execute_query_func.assert_called_once_with(
-        mock_db_connection,
-        "{CALL sp_CreateOrder (?, ?, ?, ?, ?)}", # Updated SQL format
-        (
-            str(buyer_id), # Pass UUID as string
-            str(invalid_price_schema.product_id), # Pass UUID as string
-            invalid_price_schema.quantity,
-            invalid_price_schema.shipping_address,
-            invalid_price_schema.contact_phone
-        ),
-        fetchone=True
-    )
-
+# Add tests for get_orders_by_user for seller
 @pytest.mark.asyncio
-async def test_create_order_zero_or_negative_quantity(orders_dal: OrdersDAL, mock_order_create_schema: OrderCreateSchema, mock_db_connection: MagicMock, mock_execute_query_func: AsyncMock):
-    """测试数量为0或负数的情况应抛出ValueError（如果SP层面检查）。"""
-    buyer_id = uuid4()
-    # Modify schema for this test case
-    invalid_quantity_schema = mock_order_create_schema.model_copy(update={'quantity': -5}) # Use model_copy
-
-    # Assuming validation happens in the Service/API layer, but testing DAL robustness.
-
-    # Simulate SP returning an error for invalid quantity
-    mock_execute_query_func.return_value = {'OperationResultCode': -1, '': 'Invalid quantity.'} # Simulate error dictionary
-
-    with pytest.raises(DALError, match="Error creating order: Invalid quantity."):
-        await orders_dal.create_order(
-            mock_db_connection,
-            buyer_id,
-            invalid_quantity_schema.product_id,
-            invalid_quantity_schema.quantity,
-            invalid_quantity_schema.shipping_address,
-            invalid_quantity_schema.contact_phone
-        )
-    
-    mock_execute_query_func.assert_called_once_with(
-        mock_db_connection,
-        "{CALL sp_CreateOrder (?, ?, ?, ?, ?)}",
-        (
-            str(buyer_id),
-            str(invalid_quantity_schema.product_id),
-            invalid_quantity_schema.quantity,
-            invalid_quantity_schema.shipping_address,
-            invalid_quantity_schema.contact_phone
-        ),
-        fetchone=True
-    )
-
-@pytest.mark.asyncio
-async def test_get_orders_by_buyer_id_found(orders_dal: OrdersDAL, mock_db_connection: MagicMock, mock_execute_query_func: AsyncMock):
-    """测试根据买家ID获取订单列表，找到订单。"""
-    buyer_id = uuid4()
-    # Simulate DAL returning a list of order dictionaries
-    mock_dal_return_value = [
+async def test_get_orders_by_user_seller_found(
+    orders_dal: OrdersDAL,
+    mock_db_connection: MagicMock,
+    mock_execute_query_func: AsyncMock
+):
+    user_id = uuid4()
+    mock_orders = [
         {
-            'OrderID': str(uuid4()),
-            'SellerID': str(uuid4()),
-            'BuyerID': str(buyer_id),
-            'ProductID': str(uuid4()),
-            'Quantity': 1,
-            'ShippingAddress': 'Addr1',
-            'ContactPhone': '111',
-            'TotalPrice': 10.00,
-            'Status': 'Pending',
-            'CreatedAt': datetime.now(timezone.utc).replace(tzinfo=None),
-            'UpdatedAt': datetime.now(timezone.utc).replace(tzinfo=None),
-            'CompleteTime': None,
-            'CancelTime': None,
-            'CancelReason': None
+            "OrderID": str(uuid4()),
+            "SellerID": str(user_id),
+            "BuyerID": str(uuid4()),
+            "ProductID": str(uuid4()),
+            "Quantity": 1,
+            "ShippingAddress": "123 Seller St",
+            "ContactPhone": "555-SELL",
+            "TotalPrice": 200.0,
+            "Status": "Confirmed",
+            "CreatedAt": datetime.now(timezone.utc).isoformat(),
+            "UpdatedAt": datetime.now(timezone.utc).isoformat(),
+            "CompleteTime": None,
+            "CancelTime": None,
+            "CancelReason": None
         }
     ]
-    mock_execute_query_func.return_value = mock_dal_return_value
+    mock_execute_query_func.return_value = mock_orders
 
-    orders = await orders_dal.get_orders_by_user(mock_db_connection, buyer_id, is_seller=False)
+    orders = await orders_dal.get_orders_by_user(
+        mock_db_connection, user_id, is_seller=True, status="Confirmed", page_number=1, page_size=10
+    )
 
-    assert isinstance(orders, list)
-    assert len(orders) == 1
-    assert orders == mock_dal_return_value
-
+    assert orders == mock_orders
     mock_execute_query_func.assert_called_once_with(
-        mock_db_connection, # Verify conn is passed
-        "{CALL sp_GetOrdersByUser (?, ?, ?, ?, ?)}", # Updated SQL format
-        (
-            buyer_id, # Pass UUID object directly
-            False, # is_seller is False for buyer
-            None, # Default status is None
-            1, # Default page_number is 1
-            10 # Default page_size is 10
-        ),
-        fetchall=True # Assuming SP returns multiple rows
+        mock_db_connection,
+        "{CALL sp_GetOrdersByUser (?, ?, ?, ?, ?)}",
+        (str(user_id), True, "Confirmed", 1, 10),
+        fetchall=True
     )
 
 @pytest.mark.asyncio
-async def test_get_orders_by_buyer_id_not_found(orders_dal: OrdersDAL, mock_db_connection: MagicMock, mock_execute_query_func: AsyncMock):
-    """测试根据买家ID获取订单列表，未找到订单。"""
-    buyer_id = uuid4()
-    mock_execute_query_func.return_value = []
+async def test_get_orders_by_user_seller_not_found(
+    orders_dal: OrdersDAL,
+    mock_db_connection: MagicMock,
+    mock_execute_query_func: AsyncMock
+):
+    user_id = uuid4()
+    mock_execute_query_func.return_value = [] # No orders found
 
-    orders = await orders_dal.get_orders_by_user(mock_db_connection, buyer_id, is_seller=False)
+    orders = await orders_dal.get_orders_by_user(
+        mock_db_connection, user_id, is_seller=True, status="Pending", page_number=1, page_size=10
+    )
 
-    assert isinstance(orders, list)
-    assert len(orders) == 0
     assert orders == []
-
     mock_execute_query_func.assert_called_once_with(
-        mock_db_connection, # Verify conn is passed
-        "{CALL sp_GetOrdersByUser (?, ?, ?, ?, ?)}", # Updated SQL format
-        (
-            buyer_id, # Pass UUID object directly
-            False, # is_seller is False for buyer
-            None, # Default status is None
-            1, # Default page_number is 1
-            10 # Default page_size is 10
-        ),
-        fetchall=True # Assuming SP returns multiple rows
+        mock_db_connection,
+        "{CALL sp_GetOrdersByUser (?, ?, ?, ?, ?)}",
+        (str(user_id), True, "Pending", 1, 10),
+        fetchall=True
     )
 
 @pytest.mark.asyncio
-async def test_get_orders_by_buyer_id_db_error(orders_dal: OrdersDAL, mock_db_connection: MagicMock, mock_execute_query_func: AsyncMock):
-    """测试根据买家ID获取订单列表，发生数据库错误。"""
-    buyer_id = uuid4()
-    mock_execute_query_func.side_effect = pyodbc.Error("DB error")
+async def test_get_orders_by_user_seller_db_error(
+    orders_dal: OrdersDAL,
+    mock_db_connection: MagicMock,
+    mock_execute_query_func: AsyncMock
+):
+    user_id = uuid4()
+    error_msg = "[SQLSTATE 08S01] Another DB error for get_orders_by_user"
+    mock_execute_query_func.side_effect = pyodbc.Error(error_msg)
 
-    with pytest.raises(DALError, match="Error fetching orders by user: DB error"):
-        await orders_dal.get_orders_by_user(mock_db_connection, buyer_id, is_seller=False)
-
-    mock_execute_query_func.assert_called_once_with(
-        mock_db_connection, # Verify conn is passed
-        "{CALL sp_GetOrdersByUser (?, ?, ?, ?, ?)}", # Updated SQL format
-        (
-            buyer_id, # Pass UUID object directly
-            False, # is_seller is False for buyer
-            None, # Default status is None
-            1, # Default page_number is 1
-            10 # Default page_size is 10
-        ),
-        fetchall=True # Assuming SP returns multiple rows
-    )
-
-@pytest.mark.asyncio
-async def test_get_orders_by_seller_id_found(orders_dal: OrdersDAL, mock_db_connection: MagicMock, mock_execute_query_func: AsyncMock):
-    """测试根据卖家ID获取订单列表，找到订单。"""
-    seller_id = uuid4()
-    mock_dal_return_value = [
-        {
-            'OrderID': str(uuid4()),
-            'SellerID': str(seller_id),
-            'BuyerID': str(uuid4()),
-            'ProductID': str(uuid4()),
-            'Quantity': 2,
-            'ShippingAddress': 'Addr4',
-            'ContactPhone': '444',
-            'TotalPrice': 20.00,
-            'Status': 'Pending',
-            'CreatedAt': datetime.now(timezone.utc).replace(tzinfo=None),
-            'UpdatedAt': datetime.now(timezone.utc).replace(tzinfo=None),
-            'CompleteTime': None,
-            'CancelTime': None,
-            'CancelReason': None
-        }
-    ]
-    mock_execute_query_func.return_value = mock_dal_return_value
-
-    orders = await orders_dal.get_orders_by_user(mock_db_connection, seller_id, is_seller=True)
-
-    assert isinstance(orders, list)
-    assert len(orders) == 1
-    assert orders == mock_dal_return_value
-
-    mock_execute_query_func.assert_called_once_with(
-        mock_db_connection, # Verify conn is passed
-        "{CALL sp_GetOrdersByUser (?, ?, ?, ?, ?)}", # Updated SQL format
-        (
-            seller_id, # Pass UUID object directly
-            True, # is_seller is True for seller
-            None, # Default status is None
-            1, # Default page_number is 1
-            10 # Default page_size is 10
-        ),
-        fetchall=True # Assuming SP returns multiple rows
-    )
-
-@pytest.mark.asyncio
-async def test_get_orders_by_seller_id_not_found(orders_dal: OrdersDAL, mock_db_connection: MagicMock, mock_execute_query_func: AsyncMock):
-    """测试根据卖家ID获取订单列表，未找到订单。"""
-    seller_id = uuid4()
-    mock_execute_query_func.return_value = []
-
-    orders = await orders_dal.get_orders_by_user(mock_db_connection, seller_id, is_seller=True)
-
-    assert isinstance(orders, list)
-    assert len(orders) == 0
-    assert orders == []
-
-    mock_execute_query_func.assert_called_once_with(
-        mock_db_connection, # Verify conn is passed
-        "{CALL sp_GetOrdersByUser (?, ?, ?, ?, ?)}", # Updated SQL format
-        (
-            seller_id, # Pass UUID object directly
-            True, # is_seller is True for seller
-            None, # Default status is None
-            1, # Default page_number is 1
-            10 # Default page_size is 10
-        ),
-        fetchall=True # Assuming SP returns multiple rows
-    )
-
-@pytest.mark.asyncio
-async def test_get_orders_by_seller_id_db_error(orders_dal: OrdersDAL, mock_db_connection: MagicMock, mock_execute_query_func: AsyncMock):
-    """测试根据卖家ID获取订单列表，发生数据库错误。"""
-    seller_id = uuid4()
-    mock_execute_query_func.side_effect = pyodbc.Error("DB error")
-
-    with pytest.raises(DALError, match="Error fetching orders by user: DB error"):
-        await orders_dal.get_orders_by_user(mock_db_connection, seller_id, is_seller=True)
-
-    mock_execute_query_func.assert_called_once_with(
-        mock_db_connection, # Verify conn is passed
-        "{CALL sp_GetOrdersByUser (?, ?, ?, ?, ?)}", # Updated SQL format
-        (
-            seller_id, # Pass UUID object directly
-            True, # is_seller is True for seller
-            None, # Default status is None
-            1, # Default page_number is 1
-            10 # Default page_size is 10
-        ),
-        fetchall=True # Assuming SP returns multiple rows
-    )
+    with pytest.raises(DALError) as excinfo:
+        await orders_dal.get_orders_by_user(
+            mock_db_connection, user_id, is_seller=True, status="Confirmed", page_number=1, page_size=10
+        )
+    assert "数据库操作失败" in str(excinfo.value)
+    mock_execute_query_func.assert_called_once()
 
 # Corrected tests with fixtures and conn
 @pytest.mark.asyncio
@@ -1330,5 +1125,39 @@ async def test_reject_order_db_error(
         mock_db_connection, # Verify conn is passed
         "{CALL sp_RejectOrder(?, ?, ?)}",
         (order_id, seller_id, rejection_reason), # Pass UUID objects directly
+        fetchone=True
+    )
+
+@pytest.mark.asyncio
+async def test_create_order_invalid_quantity(orders_dal: OrdersDAL, mock_order_create_schema: OrderCreateSchema, mock_db_connection: MagicMock, mock_execute_query_func: AsyncMock):
+    """测试数量为0或负数的情况应抛出ValueError。"""
+    buyer_id = uuid4()
+    # Modify schema for this test case
+    invalid_quantity_schema = mock_order_create_schema.model_copy(update={'quantity': 0}) # Use model_copy
+
+    # Simulate the SP returning an error for invalid quantity
+    mock_execute_query_func.side_effect = pyodbc.Error("[SQLSTATE 50003] 商品库存不足") # Simulate error from SP
+
+    with pytest.raises(IntegrityError) as excinfo: # Expect IntegrityError for stock issues
+         await orders_dal.create_order(
+             mock_db_connection, # Pass mock_db_connection
+             buyer_id,
+             invalid_quantity_schema.product_id,
+             invalid_quantity_schema.quantity,
+             invalid_quantity_schema.shipping_address,
+             invalid_quantity_schema.contact_phone
+         )
+    assert "商品库存不足" in str(excinfo.value)
+
+    mock_execute_query_func.assert_called_once_with(
+        mock_db_connection,
+        "{CALL sp_CreateOrder (?, ?, ?, ?, ?)}",
+        (
+            str(buyer_id),
+            str(invalid_quantity_schema.product_id),
+            invalid_quantity_schema.quantity,
+            invalid_quantity_schema.shipping_address,
+            invalid_quantity_schema.contact_phone
+        ),
         fetchone=True
     )
