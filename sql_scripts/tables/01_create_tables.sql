@@ -17,16 +17,14 @@ CREATE TABLE [User] (
         CHECK ([Credit] BETWEEN 0 AND 100),                 -- 信用分必须在0到100之间
     [IsStaff] BIT NOT NULL DEFAULT 0,                       -- 是否为平台管理员：0=普通用户，1=管理员，默认为0
     [IsSuperAdmin] BIT NOT NULL DEFAULT 0,                -- 是否超级管理员 (0=否, 1=是)
-    [IsVerified] BIT NOT NULL DEFAULT 0,                    -- 校园身份是否已通过邮箱认证：0=未认证，1=已认证，默认为0 (通过邮箱魔术链接认证)
+    [IsVerified] BIT NOT NULL DEFAULT 0,                    -- 校园身份是否已通过邮箱认证：0=未认证，1=已认证，默认为0 (通过邮箱OPT认证)
     [Major] NVARCHAR(100) NULL,                             -- 用户专业信息，可为空
     [Email] NVARCHAR(254) NULL,                  -- 用户认证邮箱，可以为空但认证后必须唯一（不能使用标准的唯一约束，标准唯一约束不允许重复的NULL值,修改为使用一个筛选的唯一索引。作为魔术链接认证的依据）
     [AvatarUrl] NVARCHAR(255) NULL,                         -- 用户头像图片URL，可为空
     [Bio] NVARCHAR(500) NULL,                               -- 用户个人简介，可为空
     [PhoneNumber] NVARCHAR(20) NULL UNIQUE,                 -- 用户手机号码，允许为空但如果填写则必须唯一
     [JoinTime] DATETIME NOT NULL DEFAULT GETDATE(),         -- 用户注册时间，不允许为空，默认当前系统时间
-    [VerificationToken] UNIQUEIDENTIFIER NULL,              -- 用于存储魔术链接认证的临时token
-    [TokenExpireTime] DATETIME NULL,                         -- 用于存储token过期时间
-    [LastLoginTime] DATETIME2 NULL,                         -- 用户最后登录时间
+    [LastLoginTime] DATETIME2 NULL                          -- 用户最后登录时间
 );
 GO
 
@@ -199,4 +197,24 @@ CREATE TABLE [Report] (
     CONSTRAINT FK_Report_Product FOREIGN KEY ([ReportedProductID]) REFERENCES [Product]([ProductID]), -- 外键关联被举报商品
     CONSTRAINT FK_Report_Order FOREIGN KEY ([ReportedOrderID]) REFERENCES [Order]([OrderID]) -- 外键关联被举报订单
 );
+GO
+
+-- 11. OTP 表 (Otp)
+-- 存储用于各种验证（如密码重置、登录、邮箱验证）的一次性密码 (OTP)。
+CREATE TABLE [Otp] (
+    [OtpID] UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),       -- OTP 唯一标识符，主键
+    [UserID] UNIQUEIDENTIFIER NOT NULL,                         -- 关联的用户ID
+    [OtpCode] NVARCHAR(10) NOT NULL,                            -- OTP 代码（通常是6位数字或字母数字组合）
+    [CreationTime] DATETIME NOT NULL DEFAULT GETDATE(),         -- OTP 创建时间
+    [ExpiresAt] DATETIME NOT NULL,                              -- OTP 过期时间
+    [IsUsed] BIT NOT NULL DEFAULT 0,                            -- OTP 是否已被使用：0=未使用，1=已使用
+    [OtpType] NVARCHAR(50) NOT NULL,                            -- OTP 类型 (例如: 'PasswordReset', 'Login', 'EmailVerification')
+    CONSTRAINT FK_Otp_User FOREIGN KEY ([UserID]) REFERENCES [User]([UserID]) ON DELETE CASCADE -- 外键关联用户表，用户删除时相关OTP也删除
+);
+GO
+
+-- 针对 Otp 表添加筛选唯一索引
+CREATE UNIQUE INDEX IX_Otp_UserID_OtpType_NotUsed 
+ON [Otp] ([UserID], [OtpType]) 
+WHERE [IsUsed] = 0; -- 同一用户针对同类型OTP只能有一个未使用的记录
 GO

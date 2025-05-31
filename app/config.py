@@ -54,6 +54,12 @@ class Settings(BaseSettings):
     # Magic Link Expiration
     MAGIC_LINK_EXPIRE_MINUTES: int = 15 # 魔术链接过期时间（分钟）
 
+    # Password Reset Token Expiration
+    PASSWORD_RESET_TOKEN_EXPIRE_MINUTES: int = 15 # 密码重置令牌过期时间（分钟）
+
+    # OTP Expiration
+    OTP_EXPIRE_MINUTES: int = 5 # OTP过期时间（分钟）
+
     @validator('EMAIL_PROVIDER')
     def validate_email_provider(cls, v):
         if v not in ('smtp', 'aliyun'):

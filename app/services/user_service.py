@@ -4,6 +4,9 @@ from uuid import UUID
 from typing import Optional, Callable, Awaitable, List, Dict
 import logging
 import re # Import regex for email validation
+import uuid
+import random
+import os # Import os for path manipulation
 
 logger = logging.getLogger(__name__) # Initialize logger
 
@@ -14,7 +17,12 @@ from app.exceptions import NotFoundError, IntegrityError, DALError, Authenticati
 from datetime import timedelta # Needed for token expiry
 from app.config import settings # Import settings object
 from datetime import datetime # Import datetime for data conversion
-from app.utils.email_sender import send_student_verification_email # Import the email sender
+from app.utils.email_sender import send_email # Import the generic email sender
+
+# Get the base directory of the current file
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# Construct the path to the templates directory
+EMAIL_TEMPLATES_DIR = os.path.join(BASE_DIR, "..", "templates", "emails")
 
 # Removed direct instantiation of DAL
 # user_dal = UserDAL()
@@ -23,7 +31,7 @@ from app.utils.email_sender import send_student_verification_email # Import the 
 class UserService:
     def __init__(self, user_dal: UserDAL, email_sender: Optional[Callable[[str, str, str], Awaitable[None]]] = None):
         self.user_dal = user_dal
-        self.email_sender = email_sender or self._send_email # Use default if not provided
+        self.email_sender = email_sender or send_email # Use the generic send_email as default
 
     async def create_user(self, conn: pyodbc.Connection, user_data: UserRegisterSchema) -> UserResponseSchema:
         """创建新用户。
@@ -82,22 +90,29 @@ class UserService:
             logger.error(f"Unexpected error during user creation for {user_data.username}: {e}") # Add logging
             raise e # Re-raise other unexpected errors
 
-    async def authenticate_user_and_create_token(self, conn: pyodbc.Connection, username: str, password: str) -> str:
+    async def authenticate_user_and_create_token(self, conn: pyodbc.Connection, password: str, username: Optional[str] = None, email: Optional[str] = None) -> str:
         """
-        Service layer function to authenticate a user and generate a JWT token.
+        Service layer function to authenticate a user by username or email and generate a JWT token.
         Calls DAL to get user, verifies password, checks status, and creates token.
         """
-        logger.info(f"Attempting to authenticate user: {username}") # Add logging
+        logger.info(f"Attempting to authenticate user: username={username}, email={email}") # Add logging
 
-        # 1. Call DAL to get user with password hash
-        logger.debug(f"Calling DAL.get_user_by_username_with_password for {username}") # Add logging
-        user = await self.user_dal.get_user_by_username_with_password(conn, username)
-        logger.debug(f"DAL.get_user_by_username_with_password returned: {user}") # Add logging
+        user = None
+        if username:
+             # 1a. Call DAL to get user with password hash by username
+             logger.debug(f"Calling DAL.get_user_by_username_with_password for username {username}") # Add logging
+             user = await self.user_dal.get_user_by_username_with_password(conn, username)
+             logger.debug(f"DAL.get_user_by_username_with_password returned: {user}") # Add logging
+        elif email:
+             # 1b. Call DAL to get user with password hash by email
+             logger.debug(f"Calling DAL.get_user_by_email_with_password for email {email}") # Add logging
+             user = await self.user_dal.get_user_by_email_with_password(conn, email)
+             logger.debug(f"DAL.get_user_by_email_with_password returned: {user}") # Add logging
 
         if not user:
-            # User not found
-            logger.warning(f"Authentication failed: User {username} not found.") # Add logging
-            raise AuthenticationError("用户名或密码不正确")
+            # User not found by either username or email
+            logger.warning(f"Authentication failed: User not found for username={username}, email={email}") # Add logging
+            raise AuthenticationError("用户名/邮箱或密码不正确")
 
         # 2. Verify password
         stored_password_hash = user.get('Password')
@@ -280,7 +295,7 @@ class UserService:
         try:
             # 1. Check if the super_admin_id is indeed a super admin
             super_admin_profile = await self.user_dal.get_user_by_id(conn, super_admin_id)
-            if not super_admin_profile or not super_admin_profile.get('IsSuperAdmin'):
+            if not super_admin_profile or not super_admin_profile.get('是否超级管理员'):
                 logger.warning(f"Unauthorized attempt: User {super_admin_id} is not a super admin.")
                 raise ForbiddenError("只有超级管理员才能更改用户管理员状态。")
 
@@ -290,19 +305,19 @@ class UserService:
                 logger.warning(f"Target user {target_user_id} not found for staff status toggle.")
                 raise NotFoundError(f"User with ID {target_user_id} not found.")
 
-            current_is_staff = target_user_profile.get('IsStaff', False)
+            current_is_staff = target_user_profile.get('是否管理员', False)
             new_is_staff_status = not current_is_staff # Toggle the status
 
             # Prevent a super admin from revoking their own super admin status via this method
             # This method only toggles IsStaff, not IsSuperAdmin.
             # A super admin might want to toggle their own IsStaff if they also hold that role.
             # However, direct super admin role removal should be separate.
-            if target_user_id == super_admin_id and target_user_profile.get('IsSuperAdmin'):
+            if target_user_id == super_admin_id and target_user_profile.get('是否超级管理员'):
                 logger.warning(f"Super admin {super_admin_id} attempted to toggle their own staff status. Not allowed for super admins via this route.")
                 raise ForbiddenError("超级管理员不能通过此操作修改自己的管理员状态。") # Specific error
 
             # 3. Call DAL to update the IsStaff status
-            update_success = await self.user_dal.toggle_user_staff_status(conn, target_user_id, new_is_staff_status)
+            update_success = await self.user_dal.update_user_staff_status(conn, target_user_id, new_is_staff_status, super_admin_id)
 
             if not update_success:
                 logger.error(f"Failed to toggle staff status for user {target_user_id} in DAL.")
@@ -320,46 +335,52 @@ class UserService:
 
     async def request_verification_email(self, conn: pyodbc.Connection, email: str, user_id: Optional[UUID] = None) -> dict:
         """
-        请求发送邮箱验证魔术链接。
-        如果用户已登录 (user_id 提供), 则更新该用户的验证令牌。
-        如果用户未登录 (user_id 为 None) 且邮箱已存在, 则更新现有用户的验证令牌。
-        如果用户未登录且邮箱不存在, 则创建一个新用户并发送验证令牌。
+        请求发送邮箱验证 OTP。
+        如果用户已登录 (user_id 提供), 则更新该用户的验证 OTP。
+        如果用户未登录 (user_id 为 None) 且邮箱已存在, 则更新现有用户的验证 OTP。
+        如果用户未登录且邮箱不存在, 则创建一个新用户并发送验证 OTP。
         """
-        logger.info(f"Attempting to request verification email for email: {email}, user_id: {user_id}")
+        logger.info(f"Attempting to request verification OTP for email: {email}, user_id: {user_id}")
 
         if not re.match(r"[^@]+@bjtu\.edu\.cn$", email):
             logger.warning(f"Invalid BJTU email format for: {email}")
             raise ValueError("只允许使用北京交通大学邮箱地址进行验证 (@bjtu.edu.cn)")
 
         try:
-            # Call the DAL procedure to request magic link
-            # sp_RequestMagicLink handles finding/creating user and updating token
-            result = await self.user_dal.request_magic_link(conn, email, user_id)
-            
-            # result will contain 'VerificationToken', 'UserID', 'IsNewUser'
-            verification_token = result.get('VerificationToken')
-            target_user_id = result.get('UserID')
-            is_new_user = result.get('IsNewUser', False)
+            # 1. 查找用户或为新用户创建 OTP
+            # 使用 DAL 的 request_verification_link 方法获取用户ID
+            user_info = await self.user_dal.request_verification_link(conn, user_id, email) # This DAL method now returns UserID
+            target_user_id = user_info.get('UserID')
 
-            if not verification_token or not target_user_id:
-                logger.error(f"DAL did not return expected verification token or user ID for email: {email}")
-                raise DALError("数据库操作失败：未能获取有效的验证令牌。")
+            if not target_user_id:
+                # If user not found, and it's not a new user scenario (which DAL would handle implicitly)
+                # This means the email isn't registered and no user ID was generated.
+                logger.warning(f"User not found for email {email} when requesting verification OTP. Returning generic success message.")
+                # For security, return generic success message.
+                return {"message": "如果邮箱存在，您将很快收到一封包含验证码的邮件。"}
 
-            # Send the email with the magic link
-            magic_link_url = f"{settings.FRONTEND_URL}/verify?token={verification_token}"
-            email_subject = "思源淘学生身份验证邮件"
-            email_body = (
-                f"亲爱的同学！\n\n请点击以下链接验证您的邮箱地址：\n\n"
-                f"{magic_link_url}\n\n"
-                f"此链接将在 {settings.MAGIC_LINK_EXPIRE_MINUTES} 分钟后失效。如果您没有请求此验证，请忽略。\n\n"
-                f"祝您使用愉快！\n思源淘开发团队"
-            )
+            # 2. 生成 OTP
+            otp_code = str(random.randint(100000, 999999)) # Generate a 6-digit OTP
+            expires_at = datetime.utcnow() + timedelta(minutes=settings.OTP_EXPIRE_MINUTES)
+
+            # 3. 存储 OTP
+            await self.user_dal.create_otp(conn, target_user_id, otp_code, expires_at, 'EmailVerification')
+            logger.debug(f"OTP {otp_code} created for user {target_user_id}")
+
+            # 4. 发送包含 OTP 的邮件
+            email_subject = "思源淘学生身份认证"
             
-            logger.debug(f"Sending verification email to {email}")
+            template_path = os.path.join(EMAIL_TEMPLATES_DIR, "student_verification_email.html")
+            with open(template_path, "r", encoding="utf-8") as f:
+                email_body_template = f.read()
+            
+            email_body = email_body_template.format(otp_code=otp_code, expire_minutes=settings.OTP_EXPIRE_MINUTES)
+            
+            logger.debug(f"Sending verification OTP email to {email}")
             await self.email_sender(email, email_subject, email_body)
-            logger.info(f"Verification email sent to {email}")
+            logger.info(f"Verification OTP email sent to {email}")
 
-            return {"message": "验证邮件已发送。", "user_id": target_user_id, "is_new_user": is_new_user}
+            return {"message": "验证码已发送，请检查您的邮箱。", "user_id": target_user_id, "is_new_user": user_info.get('IsNewUser', False)}
 
         except ValueError as e:
             logger.warning(f"Value error during email request: {e}")
@@ -374,29 +395,43 @@ class UserService:
             logger.error(f"Unexpected error during email verification request for {email}: {e}")
             raise e
 
-    async def verify_email(self, conn: pyodbc.Connection, token: UUID) -> dict:
+    # New method to verify email with OTP
+    async def verify_email_otp(self, conn: pyodbc.Connection, email: str, otp_code: str) -> dict:
         """
-        验证邮箱魔术链接。
+        Service layer function to verify email using OTP.
         """
-        logger.info(f"Attempting to verify email with token: {token}")
+        logger.info(f"Attempting to verify email with OTP for email: {email}")
         try:
-            result = await self.user_dal.verify_magic_link(conn, token)
+            # 1. Get OTP details from DAL and validate
+            otp_details = await self.user_dal.get_otp_details(conn, email, otp_code)
+
+            if not otp_details:
+                logger.warning(f"OTP verification failed: Invalid, expired, or used OTP for email {email}.")
+                raise AuthenticationError("验证码无效或已过期，请重新获取。")
             
-            user_id = result.get('UserID')
-            is_verified = result.get('IsVerified')
+            user_id = otp_details.get('UserID')
+            otp_id = otp_details.get('OtpID')
 
-            if not user_id:
-                logger.warning(f"Verification failed: User ID not found for token: {token}")
-                raise AuthenticationError("魔术链接无效或已过期。")
+            if not user_id or not otp_id:
+                logger.error(f"DAL error: UserID or OtpID missing from OTP details for email {email}.")
+                raise DALError("Failed to retrieve user ID or OTP ID from OTP details.")
 
-            logger.info(f"Email verification successful for user ID: {user_id}. IsVerified: {is_verified}")
-            return {"user_id": user_id, "is_verified": is_verified, "message": "邮箱验证成功。"}
+            # 2. Mark user email as verified
+            await self.user_dal.verify_email(conn, user_id) # Call the updated DAL verify_email
+            logger.info(f"Email marked as verified for user ID: {user_id} after OTP verification.")
 
-        except DALError as e:
-            logger.error(f"Database error during email verification for token {token}: {e}")
-            raise AuthenticationError(f"邮箱验证失败：{e}") from e # Re-raise as AuthenticationError
+            # 3. Mark OTP as used
+            mark_success = await self.user_dal.mark_otp_as_used(conn, otp_id)
+            if not mark_success:
+                logger.warning(f"Failed to mark OTP {otp_id} as used after email verification for user {user_id}.")
+
+            return {"user_id": user_id, "is_verified": True, "message": "邮箱验证成功。"}
+
+        except (AuthenticationError, DALError) as e:
+            logger.error(f"Error during email OTP verification for email {email}: {e}")
+            raise e
         except Exception as e:
-            logger.error(f"Unexpected error during email verification for token {token}: {e}")
+            logger.error(f"Unexpected error during email OTP verification for email {email}: {e}")
             raise e
 
     async def get_system_notifications(self, conn: pyodbc.Connection, user_id: UUID) -> list[dict]:
@@ -556,7 +591,8 @@ class UserService:
             "avatar_url": dal_user_data.get("头像URL"),
             "bio": dal_user_data.get("个人简介"),
             "phone_number": dal_user_data.get("手机号码"),
-            "join_time": dal_user_data.get("注册时间")
+            "join_time": dal_user_data.get("注册时间"),
+            "last_login_time": dal_user_data.get("最后登录时间") # Added for admin view
         }
 
         # Validate with Pydantic schema to ensure correctness
@@ -572,10 +608,265 @@ class UserService:
         """Default email sender function, primarily for internal use if no external sender is provided."""
         logger.info(f"Default email sender: Sending email to {to_email} with subject '{subject}'")
         try:
-            await send_student_verification_email(to_email, subject, body)
+            await send_email(to_email, subject, body)
             logger.info(f"Default email sender: Email sent successfully to {to_email}")
         except Exception as e:
             logger.error(f"Default email sender: Failed to send email to {to_email}: {e}")
             raise EmailSendingError(f"Failed to send email to {to_email}") from e
+
+    # New method to request password reset
+    async def request_password_reset(self, conn: pyodbc.Connection, email: str) -> dict:
+        """
+        Service layer function to handle password reset request.
+        Finds user by email, creates a reset token, and sends an email with the reset link.
+        """
+        logger.info(f"Attempting to initiate password reset for email: {email}")
+
+        # 1. Find user by email
+        user = await self.user_dal.get_user_by_email_with_password(conn, email)
+
+        if not user or not user.get('UserID'):
+            # User not found by email. For security, don't reveal if email exists or not.
+            logger.warning(f"Password reset request for non-existent email: {email}")
+            return {"message": "如果邮箱存在，您将很快收到一封包含密码重置链接的邮件。"}
+            
+        user_id = user['UserID']
+
+        # 2. Generate a unique OTP (e.g., 6-digit number)
+        otp_code = str(random.randint(100000, 999999)) # Generate a 6-digit OTP
+        logger.debug(f"Generated OTP for email {email}: {otp_code}")
+
+        # 3. Calculate OTP expiry time
+        expires_at = datetime.utcnow() + timedelta(minutes=settings.OTP_EXPIRE_MINUTES) # Use new setting
+        logger.debug(f"OTP for email {email} expires at: {expires_at}")
+
+        # 4. Store OTP in the database
+        try:
+            logger.debug(f"Calling DAL.create_otp for user ID {user_id}")
+            otp_record = await self.user_dal.create_otp(conn, user_id, otp_code, expires_at, 'PasswordReset')
+            if not otp_record:
+                logger.error(f"DAL.create_otp returned None for email {email}. User ID was {user_id}")
+                return {"message": "如果邮箱存在，您将很快收到一封包含密码重置链接的邮件。"}
+            logger.debug(f"DAL.create_otp returned: {otp_record}")
+
+        except DALError as e:
+            logger.error(f"Database error creating OTP for email {email}: {e}")
+            raise DALError(f"Database error creating OTP: {e}") from e
+        except Exception as e:
+            logger.error(f"Unexpected error creating OTP for email {email}: {e}")
+            return {"message": "如果邮箱存在，您将很快收到一封包含密码重置链接的邮件。"}
+
+        # 5. Send email with the OTP
+        try:
+            subject = "思源淘 - 密码重置验证码"
+            
+            template_path = os.path.join(EMAIL_TEMPLATES_DIR, "password_reset_email.html")
+            with open(template_path, "r", encoding="utf-8") as f:
+                email_body_template = f.read()
+            
+            email_body = email_body_template.format(otp_code=otp_code, expire_minutes=settings.OTP_EXPIRE_MINUTES)
+            
+            logger.debug(f"Sending OTP email to {email}")
+            await self.email_sender(email, subject, email_body)
+            logger.info(f"OTP email sent to {email}")
+            
+        except EmailSendingError as e:
+             logger.error(f"Email sending failed for OTP to {email}: {e}")
+        except Exception as e:
+            logger.error(f"Unexpected error sending OTP email to {email}: {e}")
+             
+        logger.info(f"Password reset request (OTP) processed for email: {email}")
+        return {"message": "如果邮箱存在，您将很快收到一封包含密码重置链接的邮件。"}
+
+    # New method to verify OTP and reset password
+    async def verify_otp_and_reset_password(self, conn: pyodbc.Connection, email: str, otp_code: str, new_password: str) -> bool:
+        """
+        Service layer function to verify OTP and reset user's password.
+        """
+        logger.info(f"Attempting to verify OTP and reset password for email: {email}")
+
+        # 1. Get OTP details from DAL and validate
+        logger.debug(f"Calling DAL.get_otp_details for email {email} and OTP {otp_code}")
+        otp_details = await self.user_dal.get_otp_details(conn, email, otp_code)
+        logger.debug(f"DAL.get_otp_details returned: {otp_details}")
+
+        if not otp_details:
+            logger.warning(f"OTP verification failed: Invalid, expired, or used OTP for email {email}.")
+            raise AuthenticationError("验证码无效或已过期，请重新获取。")
+        
+        user_id = otp_details.get('UserID')
+        otp_id = otp_details.get('OtpID')
+
+        if not user_id or not otp_id:
+            logger.error(f"DAL error: UserID or OtpID missing from OTP details for email {email}.")
+            raise DALError("Failed to retrieve user ID or OTP ID from OTP details.")
+
+        # 2. Hash the new password
+        new_hashed_password = get_password_hash(new_password)
+        logger.debug(f"New password hashed for user ID {user_id}")
+
+        # 3. Update password in DAL
+        try:
+            logger.debug(f"Calling DAL.update_user_password for user ID {user_id}")
+            update_success = await self.user_dal.update_user_password(conn, user_id, new_hashed_password)
+            if not update_success:
+                logger.error(f"Failed to update password for user {user_id} after OTP verification.")
+                raise DALError("密码重置失败：无法更新用户密码。")
+            logger.info(f"Password updated successfully for user ID: {user_id} after OTP verification.")
+        except DALError as e:
+            logger.error(f"Database error updating password after OTP verification for user {user_id}: {e}")
+            raise DALError(f"数据库错误：密码重置失败。") from e
+        except Exception as e:
+            logger.error(f"Unexpected error updating password after OTP verification for user {user_id}: {e}")
+            raise e
+
+        # 4. Mark OTP as used in DAL
+        try:
+            logger.debug(f"Marking OTP {otp_id} as used.")
+            mark_success = await self.user_dal.mark_otp_as_used(conn, otp_id)
+            if not mark_success:
+                logger.warning(f"Failed to mark OTP {otp_id} as used after password reset for user {user_id}.")
+                # This is a non-critical error, password reset is successful but OTP might be reusable.
+                # Decide if this should raise an error or just be logged.
+        except Exception as e:
+            logger.error(f"Error marking OTP {otp_id} as used: {e}")
+            # Log but don't re-raise as password reset was successful.
+
+        return True # Indicate overall success
+
+    # New method to request OTP for passwordless login
+    async def request_login_otp(self, conn: pyodbc.Connection, identifier: str) -> dict:
+        """
+        Service layer function to request OTP for passwordless login.
+        Finds user by identifier (email or username), creates an OTP, and sends an email with the OTP.
+        """
+        logger.info(f"Attempting to request login OTP for identifier: {identifier}")
+
+        user = None
+        if "@" in identifier: # Simple check for email
+            user = await self.user_dal.get_user_by_email_with_password(conn, identifier) # Reuse existing DAL method
+        else:
+            user = await self.user_dal.get_user_by_username_with_password(conn, identifier) # Reuse existing DAL method
+
+        if not user or not user.get('UserID'):
+            logger.warning(f"Login OTP request for non-existent identifier: {identifier}")
+            # For security, return a generic success message even if user not found
+            return {"message": "如果账户存在，您将很快收到一封包含登录验证码的邮件。"}
+
+        user_id = user['UserID']
+        email = user.get('Email') # Assuming DAL returns Email field
+
+        if not email:
+            logger.warning(f"User {user_id} does not have an associated email for OTP login.")
+            raise ValueError("您的账户未绑定邮箱，无法使用OTP登录。请使用密码登录。")
+
+        # Generate OTP
+        otp_code = str(random.randint(100000, 999999)) # 6-digit OTP
+        expires_at = datetime.utcnow() + timedelta(minutes=settings.OTP_EXPIRE_MINUTES) # Use OTP_EXPIRE_MINUTES
+
+        try:
+            await self.user_dal.create_otp(conn, user_id, otp_code, expires_at, 'Login')
+            logger.debug(f"Login OTP {otp_code} created for user {user_id}")
+        except DALError as e:
+            logger.error(f"Database error creating login OTP for {identifier}: {e}")
+            raise DALError(f"数据库错误：无法生成登录OTP。") from e
+        except Exception as e:
+            logger.error(f"Unexpected error creating login OTP for {identifier}: {e}")
+            return {"message": "如果账户存在，您将很快收到一封包含登录验证码的邮件。"}
+
+        # Send email with OTP
+        try:
+            subject = "思源淘 - 登录验证码"
+            
+            template_path = os.path.join(EMAIL_TEMPLATES_DIR, "login_otp_email.html")
+            with open(template_path, "r", encoding="utf-8") as f:
+                email_body_template = f.read()
+            
+            email_body = email_body_template.format(otp_code=otp_code, expire_minutes=settings.OTP_EXPIRE_MINUTES)
+            
+            logger.debug(f"Sending login OTP email to {email}")
+            await self.email_sender(email, subject, email_body)
+            logger.info(f"Login OTP email sent to {email}")
+        except EmailSendingError as e:
+            logger.error(f"Email sending failed for login OTP to {email}: {e}")
+            # This is a non-critical error for the user who might still be trying to log in
+            # But we should log it and possibly return a message indicating email issues.
+            return {"message": "验证码已发送，但邮件发送失败，请检查邮箱设置。"}
+        except Exception as e:
+            logger.error(f"Unexpected error sending login OTP email to {email}: {e}")
+            return {"message": "如果账户存在，您将很快收到一封包含登录验证码的邮件。"}
+
+        logger.info(f"Login OTP request processed for identifier: {identifier}")
+        return {"message": "如果账户存在，您将很快收到一封包含登录验证码的邮件。"}
+
+    # New method to verify login OTP and authenticate
+    async def verify_login_otp_and_authenticate(self, conn: pyodbc.Connection, identifier: str, otp_code: str) -> str:
+        """
+        Service layer function to verify login OTP and authenticate user.
+        Returns a JWT token on success.
+        """
+        logger.info(f"Attempting to verify login OTP and authenticate for identifier: {identifier}")
+
+        # 1. Get OTP details from DAL and validate
+        logger.debug(f"Calling DAL.get_otp_details for identifier {identifier} with OTP {otp_code}")
+        # get_otp_details currently takes email and otp_code. We need to adapt it.
+        # If identifier is username, we need to first get email.
+        user = None
+        if "@" in identifier:
+            user = await self.user_dal.get_user_by_email_with_password(conn, identifier)
+            if not user: raise NotFoundError(f"User with email {identifier} not found.")
+            email = identifier
+        else: # Assume username
+            user = await self.user_dal.get_user_by_username_with_password(conn, identifier)
+            if not user: raise NotFoundError(f"User with username {identifier} not found.")
+            email = user.get('Email')
+            if not email: raise ValueError("账户未绑定邮箱，无法使用OTP登录。请使用密码登录。")
+
+        otp_details = await self.user_dal.get_otp_details(conn, email, otp_code)
+        logger.debug(f"DAL.get_otp_details returned: {otp_details}")
+
+        if not otp_details:
+            logger.warning(f"Login OTP verification failed: Invalid, expired, or used OTP for identifier {identifier}.")
+            raise AuthenticationError("验证码无效或已过期，请重新获取。")
+        
+        user_id = otp_details.get('UserID')
+        otp_id = otp_details.get('OtpID')
+
+        if not user_id or not otp_id:
+            logger.error(f"DAL error: UserID or OtpID missing from login OTP details for identifier {identifier}.")
+            raise DALError("Failed to retrieve user ID or OTP ID from OTP details.")
+
+        # 2. Check user account status
+        # Reuse existing user object fetched by get_user_by_email_with_password or get_user_by_username_with_password
+        if user.get('Status') == 'Disabled':
+            logger.warning(f"Authentication failed: Account for user {identifier} is disabled.")
+            raise ForbiddenError("账户已被禁用")
+
+        # 3. Mark OTP as used
+        try:
+            mark_success = await self.user_dal.mark_otp_as_used(conn, otp_id)
+            if not mark_success:
+                logger.warning(f"Failed to mark OTP {otp_id} as used after login for user {user_id}.")
+        except Exception as e:
+            logger.error(f"Error marking OTP {otp_id} as used: {e}")
+
+        # 4. Generate JWT Token
+        logger.debug(f"Creating JWT token for user: {identifier}")
+        access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+        is_staff = user.get('IsStaff', False)
+        is_verified = user.get('IsVerified', False)
+        is_super_admin = user.get('IsSuperAdmin', False)
+
+        access_token = create_access_token(
+            data={
+                "user_id": str(user_id),
+                "is_staff": is_staff,
+                "is_verified": is_verified,
+                "is_super_admin": is_super_admin
+            },
+            expires_delta=access_token_expires
+        )
+        logger.info(f"Authentication successful with OTP for user: {identifier}")
+        return access_token
 
 # TODO: Add service functions for admin operations (get all users, disable/enable user etc.)

@@ -17,6 +17,7 @@ from app.dal.connection import get_db_connection
 import pyodbc
 from uuid import UUID
 # from datetime import timedelta # Not directly needed in router for this logic
+import os # Import the 'os' module
 
 # Import auth dependencies from dependencies.py
 from app.dependencies import (
@@ -220,7 +221,7 @@ async def delete_user_by_id(
     user_id: UUID, # Path parameter here
     conn: pyodbc.Connection = Depends(get_db_connection), # Inject DB connection
     user_service: UserService = Depends(get_user_service), # Inject Service
-    current_admin_user: dict = Depends(get_current_active_admin_user)
+    current_admin_user: dict = Depends(get_current_super_admin_user)
 ):
     """
     管理员根据用户 ID 删除用户。
@@ -255,16 +256,11 @@ async def get_all_users_api(
     管理员获取所有用户列表。
     """
     try:
-        admin_id = current_admin_user.get('UserID') or current_admin_user.get('user_id')
-        if not admin_id:
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="无法获取管理员用户信息")
-
-        users = await user_service.get_all_users(conn, admin_id) # Pass admin_id directly
+        users = await user_service.get_all_users(conn, current_admin_user["user_id"])
         return users
-    except (ForbiddenError, DALError, AuthenticationError) as e:
+    except (ForbiddenError, DALError) as e:
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN if isinstance(e, ForbiddenError) else 
-                          (status.HTTP_401_UNAUTHORIZED if isinstance(e, AuthenticationError) else status.HTTP_500_INTERNAL_SERVER_ERROR),
+            status_code=status.HTTP_403_FORBIDDEN if isinstance(e, ForbiddenError) else status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=str(e)
         )
     except Exception as e:
@@ -310,31 +306,21 @@ async def toggle_user_staff_status(
     """
     超级管理员切换用户的管理员 (is_staff) 状态。
     """
+    super_admin_id = current_super_admin['user_id']  # Extract user_id from the dict
     try:
-        super_admin_id = current_super_admin.get('UserID') or current_super_admin.get('user_id')
-        if not super_admin_id:
-             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="无法获取超级管理员用户信息")
-
-        # Call a new Service method to toggle is_staff status
-        # This service method will need to fetch the user, check current status, and update it.
         await user_service.toggle_user_staff_status(conn, user_id, super_admin_id)
-
         return {} # 204 No Content
-
-    except (NotFoundError, ForbiddenError, DALError) as e:
-        # Corrected error handling structure
-        status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
-        if isinstance(e, NotFoundError):
-            status_code = status.HTTP_404_NOT_FOUND
-        elif isinstance(e, ForbiddenError):
-            status_code = status.HTTP_403_FORBIDDEN
-        # DALError defaults to 500
-
-        raise HTTPException(
-             status_code=status_code,
-             detail=str(e)
-        )
+    except NotFoundError as e:
+        logger.error(f"Error toggling staff status: {e}")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+    except PermissionError as e:
+        logger.error(f"Permission denied for toggling staff status for user {user_id}: {e}")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+    except (ValueError, DALError) as e:
+        logger.error(f"Error toggling staff status for user {user_id}: {e}")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except Exception as e:
+        logger.error(f"An unexpected error occurred while toggling staff status for user {user_id}: {e}", exc_info=True)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"服务器内部错误: {e}")
 
 # Admin endpoint to adjust user credit
@@ -372,40 +358,6 @@ async def adjust_user_credit_by_id(
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"服务器内部错误: {e}")
 
-# New endpoint for requesting student verification email
-@router.post("/me/request-student-verification-email", status_code=status.HTTP_200_OK, summary="请求学生身份验证邮件")
-async def request_student_email_verification_api(
-    request_data: RequestVerificationEmail, # Reuse RequestVerificationEmail schema
-    current_user: UserResponseSchema = Depends(get_current_authenticated_user), # Needs authenticated user
-    user_service: UserService = Depends(get_user_service),
-    conn: pyodbc.Connection = Depends(get_db_connection)
-):
-    """
-    当前登录用户请求发送学生身份验证邮件到其校园邮箱。
-    """
-    user_id = current_user['user_id'] # Access user_id from the dependency's dictionary result
-    email = request_data.email # Use the email from the request body
-
-    logger.info(f"API: User {user_id} requesting student verification email for {email}")
-    try:
-        # Call Service layer function
-        result = await user_service.request_verification_email(conn, user_id, email) # Pass user_id and email
-        # Service layer handles validation, token generation, email update in DB, and sending email
-        return {"message": result.get("message", "验证邮件已发送。")} # Return message from service
-
-    except (IntegrityError, ValueError, DALError, AuthenticationError, ForbiddenError) as e:
-         # Catch specific errors from Service
-         raise HTTPException(
-             status_code=status.HTTP_409_CONFLICT if isinstance(e, IntegrityError) else # Email already in use
-                           (status.HTTP_400_BAD_REQUEST if isinstance(e, ValueError) else # Invalid email format or bad request
-                            (status.HTTP_401_UNAUTHORIZED if isinstance(e, AuthenticationError) else
-                             (status.HTTP_403_FORBIDDEN if isinstance(e, ForbiddenError) else status.HTTP_500_INTERNAL_SERVER_ERROR))),
-             detail=str(e)
-         )
-    except Exception as e:
-        logger.exception("API: Unexpected error during request student verification email")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"发送验证邮件时发生内部错误: {e}")
-
 # Removed email verification routes as they are in auth.py
 # @router.post("/request-verification-email", status_code=status.HTTP_200_OK)
 # async def request_verification_email_api(
@@ -423,16 +375,11 @@ async def get_all_users_api(
     管理员获取所有用户列表。
     """
     try:
-        admin_id = current_admin_user.get('UserID') or current_admin_user.get('user_id')
-        if not admin_id:
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="无法获取管理员用户信息")
-
-        users = await user_service.get_all_users(conn, admin_id) # Pass admin_id directly
+        users = await user_service.get_all_users(conn, current_admin_user["user_id"])
         return users
-    except (ForbiddenError, DALError, AuthenticationError) as e:
+    except (ForbiddenError, DALError) as e:
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN if isinstance(e, ForbiddenError) else 
-                          (status.HTTP_401_UNAUTHORIZED if isinstance(e, AuthenticationError) else status.HTTP_500_INTERNAL_SERVER_ERROR),
+            status_code=status.HTTP_403_FORBIDDEN if isinstance(e, ForbiddenError) else status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=str(e)
         )
     except Exception as e:

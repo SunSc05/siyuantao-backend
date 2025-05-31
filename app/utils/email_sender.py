@@ -35,7 +35,7 @@ async def send_email_smtp(recipient_email: str, subject: str, body: str):
         raise EmailSendingError("SMTP 端口配置无效。")
 
     try:
-        message = MIMEText(body, 'plain', 'utf-8')
+        message = MIMEText(body, 'html', 'utf-8')
         message['From'] = Header(f'您的应用 <{sender_email}>', 'utf-8') # Replace '您的应用' with your app name
         message['To'] = Header(recipient_email, 'utf-8')
         message['Subject'] = Header(subject, 'utf-8')
@@ -94,8 +94,8 @@ async def send_email_aliyun(recipient_email: str, subject: str, body: str):
             reply_to_address=False, # 是否需要回复地址
             to_address=recipient_email, # 收信人地址
             subject=subject, # 邮件标题
-            text_body=body, # 邮件正文
-            # html_body='...', # 如果是HTML邮件，使用html_body
+            # text_body=body, # 邮件正文
+            html_body=body, # 如果是HTML邮件，使用html_body
             # tag_name='...' # 邮件标签
         )
 
@@ -122,31 +122,19 @@ async def send_email_aliyun(recipient_email: str, subject: str, body: str):
         # Catch specific Aliyun SDK exceptions if needed and wrap them
         raise EmailSendingError(f"通过阿里云邮件服务发送邮件失败: {e}") from e
 
-# Modify the main sending function to use the provider setting
-async def send_student_verification_email(recipient_email: str, verification_url: str, expire_minutes: int):
+async def send_email(recipient_email: str, subject: str, body: str):
     """
-    根据配置发送学生身份验证邮件。
+    根据配置发送邮件。
 
     Args:
-        recipient_email: 接收验证邮件的邮箱地址。
-        verification_url: 包含验证令牌的魔术链接URL。
-        expire_minutes: 魔术链接的过期时间（分钟）。
+        recipient_email: 接收邮件的邮箱地址。
+        subject: 邮件主题。
+        body: 邮件正文 (可以是纯文本或HTML)。
     """
-    subject = "思源淘学生身份验证邮件"
-    body = (
-        f"亲爱的用户,\n\n请点击以下链接验证您的学生身份：\n{verification_url}\n\n"
-        f"请注意，此链接将在 {expire_minutes} 分钟后过期。\n\n"
-        f"如果您没有请求此验证，请忽略本邮件。\n\n"
-        "祝您使用愉快！\n"
-        "思源淘开发团队" 
-    )
-
     if settings.EMAIL_PROVIDER == "smtp":
         await send_email_smtp(recipient_email, subject, body)
     elif settings.EMAIL_PROVIDER == "aliyun":
-        # TODO: Call the actual Aliyun sending function after implementing it
-        # For now, call the placeholder:
-        await send_email_aliyun(recipient_email, subject, body) # Call the Aliyun sending function
+        await send_email_aliyun(recipient_email, subject, body)
     else:
         logger.error(f"Invalid email provider configured: {settings.EMAIL_PROVIDER}")
         raise EmailSendingError(f"配置的邮件服务提供商无效: {settings.EMAIL_PROVIDER}") 

@@ -32,7 +32,8 @@ BEGIN
         AvatarUrl AS 头像URL,
         Bio AS 个人简介,
         PhoneNumber AS 手机号码,
-        JoinTime AS 注册时间
+        JoinTime AS 注册时间,
+        LastLoginTime AS 最后登录时间
     FROM [User]
     WHERE UserID = @userId;
 END;
@@ -55,6 +56,10 @@ BEGIN
     END
 
     -- SQL语句涉及1个表，包含控制流(IF)和多个SELECT列
+    UPDATE [User]
+    SET LastLoginTime = GETDATE()
+    WHERE UserName = @username;
+
     SELECT
         UserID,
         UserName,
@@ -63,7 +68,8 @@ BEGIN
         IsStaff,
         IsSuperAdmin,
         IsVerified,
-        Email
+        Email,
+        LastLoginTime
     FROM [User]
     WHERE UserName = @username;
 END;
@@ -153,14 +159,16 @@ CREATE PROCEDURE [sp_UpdateUserProfile]
     @avatarUrl NVARCHAR(255) = NULL,
     @bio NVARCHAR(500) = NULL,
     @phoneNumber NVARCHAR(20) = NULL,
-    @email NVARCHAR(254) = NULL -- Add optional email parameter
+    @email NVARCHAR(254) = NULL, -- Add optional email parameter
+    @username NVARCHAR(128) = NULL -- Add username existence check variable
 AS
 BEGIN
     SET NOCOUNT ON;
 
     DECLARE @existingUserCount INT;
     DECLARE @existingPhoneCount INT;
-    DECLARE @existingEmailCount INT; -- Add email existence check variable
+    DECLARE @existingEmailCount INT;
+    DECLARE @existingUsernameCount INT; -- Add username existence check variable
 
     -- 检查用户是否存在
     SELECT @existingUserCount = COUNT(1) FROM [User] WHERE UserID = @userId;
@@ -168,6 +176,17 @@ BEGIN
     BEGIN
         RAISERROR('用户不存在。', 16, 1);
         RETURN;
+    END
+
+    -- 如果提供了用户名，检查用户名是否已被其他用户使用
+    IF @username IS NOT NULL AND LTRIM(RTRIM(@username)) <> ''
+    BEGIN
+        SELECT @existingUsernameCount = COUNT(1) FROM [User] WHERE UserName = @username AND UserID <> @userId;
+        IF @existingUsernameCount > 0
+        BEGIN
+            RAISERROR('此用户名已被其他用户使用。', 16, 1);
+            RETURN;
+        END
     END
 
     -- 如果提供了手机号码，检查手机号码是否已被其他用户使用
@@ -198,11 +217,12 @@ BEGIN
         -- SQL语句1 (UPDATE)
         UPDATE [User]
         SET
-            Major = ISNULL(@major, Major), -- 如果传入NULL，保留原值
+            UserName = ISNULL(@username, UserName), -- Update username if provided
+            Major = ISNULL(@major, Major),
             AvatarUrl = ISNULL(@avatarUrl, AvatarUrl),
             Bio = ISNULL(@bio, Bio),
             PhoneNumber = ISNULL(@phoneNumber, PhoneNumber),
-            Email = ISNULL(@email, Email) -- Update email if provided
+            Email = ISNULL(@email, Email)
         WHERE UserID = @userId;
 
         -- 检查是否更新成功 (尽管通常UPDATE成功不会抛异常，但可以检查ROWCOUNT)
@@ -293,186 +313,6 @@ BEGIN
     END TRY
     BEGIN CATCH
          IF @@TRANCOUNT > 0
-            ROLLBACK TRANSACTION;
-        THROW;
-    END CATCH
-END;
-GO
-
--- sp_RequestMagicLink: 请求魔术链接，用于注册或登录
--- 输入: @email NVARCHAR(254), @userId UNIQUEIDENTIFIER = NULL
--- 输出: 魔术链接令牌 (VerificationToken) 和用户ID (UserID)
-DROP PROCEDURE IF EXISTS [sp_RequestMagicLink];
-GO
-CREATE PROCEDURE [sp_RequestMagicLink]
-    @email NVARCHAR(254),
-    @userId UNIQUEIDENTIFIER = NULL -- Add optional userId parameter
-AS
-BEGIN
-    SET NOCOUNT ON;
-
-    DECLARE @targetUserId UNIQUEIDENTIFIER; -- Use a variable for the user ID we are operating on
-    DECLARE @isNewUser BIT = 0;
-    DECLARE @token UNIQUEIDENTIFIER = NEWID(); -- 生成新的魔术链接令牌
-    -- 令牌有效期设置为 15 分钟，与 settings.MAGIC_LINK_EXPIRE_MINUTES 一致
-    DECLARE @tokenExpireTime DATETIME = DATEADD(minute, 15, GETDATE()); 
-    DECLARE @userStatus NVARCHAR(20);
-    DECLARE @foundByEmailUserId UNIQUEIDENTIFIER; -- To store user ID found by email
-
-    BEGIN TRY
-        BEGIN TRANSACTION;
-
-        -- Step 1: Try to find the user by provided @userId if it's not NULL (for logged-in users)
-        IF @userId IS NOT NULL
-        BEGIN
-            SELECT @targetUserId = UserID, @userStatus = Status
-            FROM [User]
-            WHERE UserID = @userId;
-
-            IF @targetUserId IS NOT NULL
-            BEGIN
-                 -- User found by provided @userId
-                 SET @isNewUser = 0;
-            END
-            -- Else: User not found by provided @userId, proceed to find/create by email
-        END
-
-        -- Step 2: If user not found by @userId, try to find by @email or create new user
-        IF @targetUserId IS NULL
-        BEGIN
-            -- Find user by email (SQL语句1)
-            SELECT @foundByEmailUserId = UserID, @userStatus = Status
-            FROM [User]
-            WHERE Email = @email;
-
-            IF @foundByEmailUserId IS NULL -- New user based on email
-            BEGIN
-                SET @targetUserId = NEWID(); -- 生成新的用户ID
-                SET @isNewUser = 1;
-                -- 插入新用户 (SQL语句2)
-                INSERT INTO [User] (UserID, UserName, Password, Email, IsVerified, Status, Credit, IsStaff, JoinTime, VerificationToken, TokenExpireTime)
-                -- 用户名可以使用邮箱的一部分或随机生成，Password 可以先设为NULL或随机值
-                VALUES (@targetUserId, 'user_' + CAST(@targetUserId AS NVARCHAR(36)), CAST(NEWID() AS NVARCHAR(128)), @email, 0, 'Active', 100, 0, GETDATE(), @token, @tokenExpireTime);
-            END
-            ELSE -- Existing user found by email
-            BEGIN
-                SET @targetUserId = @foundByEmailUserId;
-                SET @isNewUser = 0;
-                -- Check if the user found by email is disabled
-                 IF @userStatus = 'Disabled'
-                 BEGIN
-                     RAISERROR('您的账户已被禁用，无法验证邮箱。', 16, 1); -- More specific error message
-                     IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
-                     RETURN;
-                 END
-                 -- Update magic link token and expiry time for the user found by email (SQL语句2)
-                 UPDATE [User]
-                 SET VerificationToken = @token, TokenExpireTime = @tokenExpireTime
-                 WHERE UserID = @targetUserId;
-            END
-        END
-        ELSE -- User was found by provided @userId, now update their token
-        BEGIN
-            -- Check if the user found by @userId is disabled
-             IF @userStatus = 'Disabled'
-             BEGIN
-                 RAISERROR('您的账户已被禁用，无法验证邮箱。', 16, 1); -- More specific error message
-                 IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
-                 RETURN;
-             END
-             -- Update magic link token and expiry time for the user found by @userId (SQL语句2)
-             UPDATE [User]
-             SET VerificationToken = @token, TokenExpireTime = @tokenExpireTime
-             WHERE UserID = @targetUserId;
-
-             -- Optional: If email is different from the one stored for this user ID, update it?
-             -- This depends on whether we allow changing email via this process. Assuming for now we do NOT
-             -- or that the Service layer ensures the email is updated before calling this SP with userId.
-             -- UPDATE [User] SET Email = @email WHERE UserID = @targetUserId AND Email IS NULL OR Email <> @email; -- Example update
-        END
-
-        COMMIT TRANSACTION;
-
-        -- 返回生成的信息 (SQL语句3)
-        SELECT @token AS VerificationToken, @targetUserId AS UserID, @isNewUser AS IsNewUser;
-
-    END TRY
-    BEGIN CATCH
-        IF @@TRANCOUNT > 0
-            ROLLBACK TRANSACTION;
-        THROW; -- 重新抛出捕获的错误
-    END CATCH
-END;
-GO
-
--- sp_VerifyMagicLink: 验证魔术链接，完成认证
--- 输入: @token UNIQUEIDENTIFIER
--- 输出: 用户ID (UserID), 用户是否已认证 (IsVerified - 更新后的状态)
-DROP PROCEDURE IF EXISTS [sp_VerifyMagicLink];
-GO
-CREATE PROCEDURE [sp_VerifyMagicLink]
-    @token UNIQUEIDENTIFIER
-AS
-BEGIN
-    SET NOCOUNT ON;
-
-    DECLARE @userId UNIQUEIDENTIFIER;
-    DECLARE @tokenExpireTime DATETIME;
-    DECLARE @userStatus NVARCHAR(20);
-    DECLARE @currentStatusIsVerified BIT;
-
-    BEGIN TRY
-        BEGIN TRANSACTION;
-
-        -- 根据令牌查询用户和过期时间、状态 (SQL语句1)
-        SELECT @userId = UserID, @tokenExpireTime = TokenExpireTime, @userStatus = Status, @currentStatusIsVerified = IsVerified
-        FROM [User]
-        WHERE VerificationToken = @token;
-
-        -- 使用 IF 进行控制流
-        IF @userId IS NULL OR @tokenExpireTime IS NULL OR @tokenExpireTime < GETDATE()
-        BEGIN
-            -- 清除可能的无效/过期令牌（可选，作为清理） (SQL语句2)
-            UPDATE [User] SET VerificationToken = NULL, TokenExpireTime = NULL WHERE VerificationToken = @token;
-            RAISERROR('魔术链接无效或已过期。', 16, 1);
-            IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
-            RETURN;
-        END
-
-        IF @userStatus = 'Disabled'
-        BEGIN
-             RAISERROR('您的账户已被禁用，无法登录。', 16, 1);
-             IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
-             RETURN;
-        END
-
-        -- 使用 IF ELSE 进行控制流
-        IF @currentStatusIsVerified = 0 -- 如果用户当前未认证
-        BEGIN
-             -- 如果验证成功，更新用户 IsVerified = 1，清除令牌和过期时间 (SQL语句2 或 3)
-             UPDATE [User]
-             SET IsVerified = 1, VerificationToken = NULL, TokenExpireTime = NULL
-             WHERE UserID = @userId;
-             SET @currentStatusIsVerified = 1; -- 返回更新后的状态
-        END
-        ELSE -- 如果用户已经认证
-        BEGIN
-            -- 仅清除 token (SQL语句2 或 3)
-            UPDATE [User]
-            SET VerificationToken = NULL, TokenExpireTime = NULL
-            WHERE UserID = @userId;
-            -- @currentStatusIsVerified 已经是 1, 保持不变
-        END
-
-
-        COMMIT TRANSACTION;
-
-        -- 返回用户ID和最终认证状态 (SQL语句4)
-        SELECT @userId AS UserID, @currentStatusIsVerified AS IsVerified;
-
-    END TRY
-    BEGIN CATCH
-        IF @@TRANCOUNT > 0
             ROLLBACK TRANSACTION;
         THROW;
     END CATCH
@@ -717,5 +557,380 @@ BEGIN
 
     -- 不再需要单独的 SELECT @ResultCode AS ResultCode;
 
+END;
+GO
+
+-- 新增：密码重置 Token 表
+IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'dbo' AND TABLE_NAME = 'PasswordResetTokens')
+BEGIN
+    CREATE TABLE [dbo].[PasswordResetTokens] (
+        TokenID UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
+        UserID UNIQUEIDENTIFIER NOT NULL FOREIGN KEY REFERENCES [User](UserID) ON DELETE CASCADE,
+        Token NVARCHAR(64) NOT NULL UNIQUE, -- 存储生成的随机Token
+        CreatedAt DATETIME NOT NULL DEFAULT GETDATE(),
+        ExpiresAt DATETIME NOT NULL,
+        Used BIT NOT NULL DEFAULT 0, -- 0: 未使用, 1: 已使用
+        -- 添加索引以加快查找速度
+        INDEX IX_PasswordResetTokens_Token (Token),
+        INDEX IX_PasswordResetTokens_UserID (UserID)
+    );
+    PRINT 'Table [dbo].[PasswordResetTokens] created.';
+END
+GO
+
+-- 新增：创建密码重置 Token 存储过程
+DROP PROCEDURE IF EXISTS [sp_CreatePasswordResetToken];
+GO
+CREATE PROCEDURE [sp_CreatePasswordResetToken]
+    @email NVARCHAR(254), -- 接受邮箱
+    @token NVARCHAR(64), -- 接受生成的Token
+    @expiresAt DATETIME -- 接受过期时间
+AS
+BEGIN
+    SET NOCOUNT ON;
+    -- SET XACT_ABORT ON; -- 遇到错误自动回滚
+
+    DECLARE @userId UNIQUEIDENTIFIER;
+
+    -- 1. 根据邮箱查找用户ID
+    SELECT @userId = UserID FROM [User] WHERE Email = @email AND Status = 'Active';
+
+    -- 如果用户不存在或非活跃，返回错误
+    IF @userId IS NULL
+    BEGIN
+        RAISERROR('指定邮箱的用户不存在或账户非活跃。', 16, 1);
+        RETURN -1; -- 返回自定义错误码
+    END
+
+    -- 2. 删除该用户之前未使用的所有重置 Token (可选，保持最新Token唯一有效)
+    -- DELETE FROM [PasswordResetTokens] WHERE UserID = @userId AND Used = 0;
+
+    -- 3. 插入新的重置 Token
+    BEGIN TRY
+        BEGIN TRANSACTION;
+        INSERT INTO [PasswordResetTokens] (UserID, Token, ExpiresAt)
+        VALUES (@userId, @token, @expiresAt);
+        COMMIT TRANSACTION;
+
+        -- 4. 返回用户ID和TokenID (如果需要)
+        SELECT @userId AS UserID, (SELECT TokenID FROM [PasswordResetTokens] WHERE Token = @token) AS TokenID; -- 返回用户ID和新的TokenID
+
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW; -- 重新抛出捕获的错误
+    END CATCH
+END;
+GO
+
+-- 新增：获取密码重置 Token 详情存储过程
+DROP PROCEDURE IF EXISTS [sp_GetPasswordResetTokenDetails];
+GO
+CREATE PROCEDURE [sp_GetPasswordResetTokenDetails]
+    @token NVARCHAR(64)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    -- 查找 Token 详情并验证其有效性
+    SELECT
+        TokenID,
+        UserID,
+        CreatedAt,
+        ExpiresAt,
+        Used
+    FROM [PasswordResetTokens]
+    WHERE Token = @token
+      AND Used = 0
+      AND ExpiresAt > GETDATE(); -- 检查未过期且未被使用
+
+    -- 如果找到有效的 Token，返回其详情；否则返回空结果集
+END;
+GO
+
+-- 新增：使用 Token 重置密码存储过程
+DROP PROCEDURE IF EXISTS [sp_ResetPasswordWithToken];
+GO
+CREATE PROCEDURE [sp_ResetPasswordWithToken]
+    @token NVARCHAR(64),
+    @newPasswordHash NVARCHAR(128)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    -- SET XACT_ABORT ON; -- 遇到错误自动回滚
+
+    DECLARE @userId UNIQUEIDENTIFIER;
+
+    -- 1. 查找并验证 Token
+    SELECT @userId = UserID
+    FROM [PasswordResetTokens]
+    WHERE Token = @token
+      AND Used = 0
+      AND ExpiresAt > GETDATE(); -- 检查未过期且未被使用
+
+    -- 如果 Token 无效，返回错误
+    IF @userId IS NULL
+    BEGIN
+        RAISERROR('无效或已过期的密码重置链接。', 16, 1);
+        RETURN -1; -- 返回自定义错误码
+    END
+
+    -- 2. 更新用户密码并标记 Token 为已使用
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        -- 更新用户密码
+        UPDATE [User]
+        SET Password = @newPasswordHash
+        WHERE UserID = @userId;
+
+        -- 标记 Token 为已使用
+        UPDATE [PasswordResetTokens]
+        SET Used = 1
+        WHERE Token = @token;
+
+        COMMIT TRANSACTION;
+
+        -- 3. 返回成功指示 (例如，更新的用户ID)
+        SELECT @userId AS UpdatedUserID, '密码重置成功。' AS Message;
+
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW; -- 重新抛出捕获的错误
+    END CATCH
+END;
+GO
+
+-- 新增：根据邮箱获取用户（包括密码哈希），用于登录
+DROP PROCEDURE IF EXISTS [sp_GetUserByEmailWithPassword];
+GO
+CREATE PROCEDURE [sp_GetUserByEmailWithPassword]
+    @email NVARCHAR(254)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    -- 检查邮箱是否为空
+    IF @email IS NULL OR LTRIM(RTRIM(@email)) = ''
+    BEGIN
+        RAISERROR('邮箱不能为空。', 16, 1);
+        RETURN;
+    END
+
+    -- 更新 LastLoginTime 并选择用户数据
+    UPDATE [User]
+    SET LastLoginTime = GETDATE()
+    WHERE Email = @email;
+
+    -- SQL语句涉及1个表，包含控制流(IF)和多个SELECT列
+    SELECT
+        UserID,
+        UserName,
+        Password,
+        Status,
+        IsStaff,
+        IsSuperAdmin,
+        IsVerified,
+        Email,
+        LastLoginTime
+    FROM [User]
+    WHERE Email = @email;
+END;
+GO
+
+-- 新增：为密码重置创建并存储 OTP
+DROP PROCEDURE IF EXISTS [sp_CreateOtpForPasswordReset];
+GO
+CREATE PROCEDURE [sp_CreateOtpForPasswordReset]
+    @userId UNIQUEIDENTIFIER,
+    @otpCode NVARCHAR(10),
+    @expiresAt DATETIME,
+    @otpType NVARCHAR(50) -- 添加新的参数
+AS
+BEGIN
+    SET NOCOUNT ON;
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        -- 检查用户是否存在
+        IF NOT EXISTS (SELECT 1 FROM [User] WHERE UserID = @userId)
+        BEGIN
+            IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+            SELECT -1 AS OperationResultCode, '用户不存在。' AS Debug_Message;
+            RETURN;
+        END
+
+        -- 首先，将该用户和该 OTP 类型的所有现有未使用的 OTP 标记为已使用
+        UPDATE [Otp]
+        SET IsUsed = 1
+        WHERE UserID = @userId AND OtpType = @otpType AND IsUsed = 0;
+
+        -- 插入新的 OTP 记录
+        INSERT INTO [Otp] (OtpID, UserID, OtpCode, CreationTime, ExpiresAt, IsUsed, OtpType) -- 包含 OtpType
+        VALUES (NEWID(), @userId, @otpCode, GETDATE(), @expiresAt, 0, @otpType); -- 传入 OtpType 值
+
+        COMMIT TRANSACTION;
+        SELECT 0 AS OperationResultCode, 'OTP创建成功。';
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        SELECT -99 AS OperationResultCode, ERROR_MESSAGE() AS Debug_Message;
+    END CATCH
+END;
+GO
+
+-- 新增：根据邮箱和 OTP 获取 OTP 详情并验证有效性
+DROP PROCEDURE IF EXISTS [sp_GetOtpDetailsAndValidate];
+GO
+CREATE PROCEDURE [sp_GetOtpDetailsAndValidate]
+    @email NVARCHAR(254),
+    @otpCode NVARCHAR(10)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    DECLARE @currentUtc DATETIME = GETUTCDATE();
+    
+    SELECT TOP 1
+        o.OtpID AS OtpID,
+        o.UserID AS UserID,
+        o.OtpCode AS OtpCode,
+        o.CreationTime AS CreationTime,
+        o.ExpiresAt AS ExpiresAt,
+        o.IsUsed AS IsUsed,
+        u.Email AS Email
+    FROM [Otp] o
+    JOIN [User] u ON o.UserID = u.UserID
+    WHERE u.Email = @email
+      AND o.OtpCode = @otpCode
+      AND o.IsUsed = 0
+      AND o.ExpiresAt > @currentUtc
+    ORDER BY o.CreationTime DESC; -- 获取最新的有效OTP
+
+    -- 如果没有找到有效 OTP，可以返回一个空结果集或一个指示。
+    IF @@ROWCOUNT = 0
+    BEGIN
+        -- 为了前端逻辑更清晰，这里返回一个特定的OperationResultCode来指示无效或过期
+        SELECT -1 AS OperationResultCode, '验证码无效或已过期。' AS Debug_Message;
+    END
+END;
+GO
+
+-- 新增：标记 OTP 为已使用
+DROP PROCEDURE IF EXISTS [sp_MarkOtpAsUsed];
+GO
+CREATE PROCEDURE [sp_MarkOtpAsUsed]
+    @otpId UNIQUEIDENTIFIER
+AS
+BEGIN
+    SET NOCOUNT ON;
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        -- 检查 OTP 是否存在且未使用
+        IF NOT EXISTS (SELECT 1 FROM [Otp] WHERE OtpID = @otpId AND IsUsed = 0)
+        BEGIN
+            IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+            SELECT -1 AS OperationResultCode, 'OTP不存在或已被使用。';
+            RETURN;
+        END
+
+        UPDATE [Otp]
+        SET IsUsed = 1
+        WHERE OtpID = @otpId;
+
+        COMMIT TRANSACTION;
+        SELECT 0 AS OperationResultCode, 'OTP已成功标记为已使用。';
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        SELECT -99 AS OperationResultCode, ERROR_MESSAGE() AS Debug_Message;
+    END CATCH
+END;
+GO
+
+-- 管理员获取所有用户列表
+DROP PROCEDURE IF EXISTS [sp_GetAllUsers];
+GO
+CREATE PROCEDURE [sp_GetAllUsers]
+    @adminId UNIQUEIDENTIFIER -- 接受管理员用户ID
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    -- 检查调用者是否为管理员或超级管理员
+    IF NOT EXISTS (SELECT 1 FROM [User] WHERE UserID = @adminId AND (IsStaff = 1 OR IsSuperAdmin = 1))
+    BEGIN
+        RAISERROR('只有管理员或超级管理员才能查看所有用户列表。', 16, 1);
+        RETURN;
+    END
+
+    SELECT
+        UserID AS 用户ID,
+        UserName AS 用户名,
+        Email AS 邮箱,
+        Status AS 账户状态,
+        Credit AS 信用分,
+        IsStaff AS 是否管理员,
+        IsSuperAdmin AS 是否超级管理员,
+        IsVerified AS 是否已认证,
+        Major AS 专业,
+        AvatarUrl AS 头像URL,
+        Bio AS 个人简介,
+        PhoneNumber AS 手机号码,
+        JoinTime AS 注册时间,
+        LastLoginTime AS 最后登录时间 -- Added LastLoginTime
+    FROM [User]
+    ORDER BY JoinTime DESC;
+END;
+GO
+
+-- 新增：管理员禁用/启用用户账户
+DROP PROCEDURE IF EXISTS [sp_AdminEnableDisableUser];
+GO
+CREATE PROCEDURE [sp_AdminEnableDisableUser]
+    @userId UNIQUEIDENTIFIER,
+    @enable BIT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    -- 检查用户是否存在
+    IF NOT EXISTS (SELECT 1 FROM [User] WHERE UserID = @userId)
+    BEGIN
+        RAISERROR('用户不存在。', 16, 1);
+        RETURN;
+    END
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        -- SQL语句1 (UPDATE)
+        UPDATE [User]
+        SET Status = CASE WHEN @enable = 1 THEN 'Active' ELSE 'Disabled' END
+        WHERE UserID = @userId;
+
+        -- 检查是否更新成功 (尽管通常UPDATE成功不会抛异常，但可以检查ROWCOUNT)
+        IF @@ROWCOUNT = 0
+        BEGIN
+            -- 如果用户存在但没有更新任何字段 (因为传入的值与原值相同)，@@ROWCOUNT可能为0
+            -- 这里可以根据需求决定是否抛出错误或仅仅提示
+            PRINT '用户状态更新完成，可能没有字段值发生变化。';
+        END
+
+        COMMIT TRANSACTION;
+
+        -- 返回更新后的用户信息 (SQL语句2: SELECT, 面向UI)
+        EXEC [sp_GetUserProfileById] @userId = @userId;
+
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0
+            ROLLBACK TRANSACTION;
+        THROW; -- 重新抛出捕获的错误
+    END CATCH
+
+    -- 增加一个额外的SELECT语句以满足复杂度要求
+    SELECT '用户状态更新完成并查询成功' AS Result;
 END;
 GO

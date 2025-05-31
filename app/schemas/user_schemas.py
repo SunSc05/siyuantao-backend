@@ -22,7 +22,7 @@ class UserLoginSchema(BaseModel):
 # Properties to receive via API on profile update
 # Renamed from UserUpdate to UserProfileUpdateSchema as per plan
 class UserProfileUpdateSchema(BaseModel):
-    # username: Optional[str] = Field(None, min_length=3, max_length=128, description="用户名") # Username update likely not allowed via profile update
+    username: Optional[str] = Field(None, min_length=3, max_length=128, description="用户名") # Username update likely not allowed via profile update
     # email: Optional[EmailStr] = Field(None, description="邮箱") # Email update may require separate verification
     # password: Optional[str] = Field(None, min_length=6, description="新密码") # Password update handled via separate endpoint
     major: Optional[str] = Field(None, max_length=100, description="专业")
@@ -52,6 +52,7 @@ class UserResponseSchema(BaseModel):
     bio: Optional[str] = Field(None, description="个人简介")
     phone_number: Optional[str] = Field(None, description="手机号码") # 手机号改为可选
     join_time: datetime = Field(..., description="注册时间 (ISO 8601格式)") # Use datetime object
+    last_login_time: Optional[datetime] = Field(None, description="最后登录时间") # Added for admin view
 
     class Config:
         from_attributes = True # Pydantic v2: 允许通过 ORM 属性名访问
@@ -87,4 +88,28 @@ class UserStatusUpdateSchema(BaseModel):
 
 class UserCreditAdjustmentSchema(BaseModel):
     credit_adjustment: int = Field(..., ge=-1000, le=1000, description="信用分调整值 (正数增加，负数减少)")
-    reason: str = Field(..., description="调整信用分的原因") 
+    reason: str = Field(..., description="调整信用分的原因")
+
+# New Schema for requesting OTP for password reset
+class RequestOtpSchema(BaseModel):
+    email: EmailStr = Field(..., description="请求发送OTP的邮箱")
+
+# New Schema for verifying OTP and resetting password
+class VerifyOtpAndResetPasswordSchema(BaseModel):
+    email: EmailStr = Field(..., description="用户邮箱")
+    otp: str = Field(..., min_length=6, max_length=6, description="收到的OTP") # Assuming 6-digit OTP
+    new_password: str = Field(..., min_length=6, description="新密码")
+
+# New Schema for verifying OTP (general purpose)
+class VerifyOtpSchema(BaseModel):
+    email: EmailStr = Field(..., description="用户邮箱")
+    otp: str = Field(..., min_length=6, max_length=6, description="收到的OTP") # Assuming 6-digit OTP
+
+# New Schema for requesting OTP for passwordless login
+class RequestLoginOtpSchema(BaseModel):
+    identifier: str = Field(..., description="用户名或邮箱，用于请求登录OTP")
+
+# New Schema for verifying OTP and performing passwordless login
+class VerifyLoginOtpSchema(BaseModel):
+    identifier: str = Field(..., description="用户名或邮箱")
+    otp: str = Field(..., min_length=6, max_length=6, description="收到的登录OTP") # Assuming 6-digit OTP 

@@ -5,6 +5,7 @@ from app.dal.base import execute_query
 from app.exceptions import NotFoundError, IntegrityError, DALError, ForbiddenError
 from uuid import UUID
 import logging
+from datetime import datetime
 from typing import Optional, Dict, Any
 # from datetime import datetime # 如果存储过程返回 datetime 对象
 
@@ -241,12 +242,12 @@ class UserDAL:
             # Catch any other unexpected exceptions during the DAL operation
             raise DALError(f"Database error during user creation: {e}") from e
 
-    async def update_user_profile(self, conn: pyodbc.Connection, user_id: UUID, *, major: Optional[str] = None, avatar_url: Optional[str] = None, bio: Optional[str] = None, phone_number: Optional[str] = None, email: Optional[str] = None) -> dict | None:
+    async def update_user_profile(self, conn: pyodbc.Connection, user_id: UUID, *, username: Optional[str] = None, major: Optional[str] = None, avatar_url: Optional[str] = None, bio: Optional[str] = None, phone_number: Optional[str] = None, email: Optional[str] = None) -> dict | None:
         """更新现有用户的个人资料，返回更新后的用户数据。"""
         logger.debug(
             # Add logging
             f"DAL: Attempting to update profile for user ID: {user_id}")
-        sql = "{CALL sp_UpdateUserProfile(?, ?, ?, ?, ?, ?)}"
+        sql = "{CALL sp_UpdateUserProfile(?, ?, ?, ?, ?, ?, ?)}"
         try:
             # Add logging
             logger.debug(
@@ -254,7 +255,7 @@ class UserDAL:
             # sp_UpdateUserProfile should return the updated user data (a dict) or indicate error/not found
             result = await self.execute_query_func(
                 conn, sql,
-                (user_id, major, avatar_url, bio, phone_number, email),
+                (user_id, major, avatar_url, bio, phone_number, email, username),
                 fetchone=True
             )
             # Add logging
@@ -311,7 +312,7 @@ class UserDAL:
                 f"DAL: Profile update for ID {user_id} returned unexpected non-dict result: {result}")
             # Decide how to handle this - maybe raise an error or return None assuming failure
             raise DALError(
-                f"Database error during profile update: Unexpected result format: {result}")
+                f"Database error during profile update: {result}")
 
         except (NotFoundError, IntegrityError) as e:
              # Add logging
@@ -557,114 +558,6 @@ class UserDAL:
                 f"Unexpected server error during user deletion: {ex}") from ex
         # No finally block needed for cursor close if using execute_query as it manages cursor.
 
-    async def request_verification_link(self, conn: pyodbc.Connection, user_id: Optional[UUID] = None, email: Optional[str] = None) -> dict:
-         """
-         请求邮箱验证链接，调用sp_RequestMagicLink。
-         可以根据 user_id 或 email 请求。用于用户已登录请求验证，或未登录通过邮箱请求。
-         当用户已登录 (@user_id is not null) 并提供 @email 时，存储过程应更新用户的 Email 字段。
-         """
-         logger.debug(
-             f"DAL: Requesting verification link for user_id: {user_id}, email: {email}")
-         # Assuming sp_RequestMagicLink now takes @userId (optional) and @email (required)
-         sql = "{CALL sp_RequestMagicLink(?, ?)}" # New SP signature
-         params = (email, user_id) # Correct the order to match SP definition (@email, @userId)
-
-         logger.debug(f"Calling stored procedure: {sql} with params: {params}")
-         result = await self.execute_query_func(conn, sql, params, fetchone=True)
-
-         # The DAL should handle cases like disabled account, email already verified etc.
-         # If result indicates success (e.g., a token was generated/sent), return a success message.
-
-         if result and isinstance(result, dict):
-             error_message = result.get('') or result.get('Error') or result.get('Message')
-             result_code = result.get('OperationResultCode')
-
-             # Check for known error messages first
-             if error_message:
-                 logger.warning(f"DAL: sp_RequestMagicLink for email {email}: SP returned message: {error_message}") # Log as message, not necessarily error yet
-                 if '您的账户已被禁用，无法登录。' in error_message or 'Account is disabled.' in error_message:
-                      raise ForbiddenError("Account is disabled.")
-                 if '邮件已存在' in error_message or 'Email already exists' in error_message:
-                      # If email already exists but SP indicates success (e.g., by returning a token),
-                      # the Service layer should handle this based on the returned data.
-                      # The DAL should not raise an error here based *only* on this message
-                      # unless the SP also returned a non-zero result_code or no success indicator.
-                      pass # Let the success/result_code check handle it
-
-             # If a specific error message led to an exception, we wouldn't reach here.
-             # Now check result code for explicit SP errors.
-             if result_code is not None and result_code != 0:
-                  # If we reached here, it's a non-zero result code without a specifically handled error message.
-                  logger.warning(f"DAL: sp_RequestMagicLink for email {email} returned non-zero result code: {result_code}. Result: {result}")
-                  # If there was an error message accompanying this, it's already logged above.
-                  # Raise DALError with the result code and potentially the message if present.
-                  raise DALError(f"Stored procedure failed with result code: {result_code}" + (f": {error_message}" if error_message else ""))
-
-             # If result_code is 0 or None, and no specific error message was found, assume success if expected keys are present.
-             # Stored procedure is expected to return VerificationToken, UserID, IsNewUser on success.
-             # However, based on trace, it might only return VerificationToken and ExpiresAt.
-             # Let\'s check for the presence of the token as the primary success indicator if no explicit error.
-             if 'VerificationToken' in result:
-                 logger.info(f"DAL: Magic link requested successfully for email {email}. Token present.")
-                 return result # Return the dictionary including the token
-
-             # If result is a dict, no explicit error, result_code 0/None, but no success indicator like VerificationToken
-             logger.warning(f"DAL: sp_RequestMagicLink for email {email} returned unexpected dict format (missing VerificationToken): {result}")
-             raise DALError("Request verification link failed: Unexpected response format from stored procedure.")
-
-         # If result is None or not a dict (and no exception from execute_query_func)
-         logger.error(f"DAL: sp_RequestMagicLink for email {email} returned unexpected result type: {result}")
-         raise DALError("Request verification link failed: Unexpected database response.")
-
-    async def verify_email(self, conn: pyodbc.Connection, token: UUID) -> dict:
-         """验证邮箱，调用sp_VerifyMagicLink。"""
-         logger.debug(f"DAL: Verifying email with token: {token}")
-         sql = "{CALL sp_VerifyMagicLink(?)}"
-         try:
-             # Use the injected execute_query function
-             # sp_VerifyMagicLink returns UserID, IsVerified, and potentially error messages.
-             result = await self.execute_query_func(conn, sql, (token,), fetchone=True)
-
-             logger.debug(f"DAL: sp_VerifyMagicLink with token {token} returned: {result}")
-
-             if result and isinstance(result, dict):
-                 error_message = result.get('') or result.get('Error') or result.get('Message')
-                 result_code = result.get('OperationResultCode')
-
-                 if error_message:
-                     logger.warning(f"DAL: sp_VerifyMagicLink failed for token {token}: SP returned error: {error_message}")
-                     if '魔术链接无效或已过期。' in error_message or 'Magic link invalid or expired.' in error_message:
-                          raise DALError("验证链接无效或已过期，请重新申请。") # Specific user-friendly message
-                     if '您的账户已被禁用，无法登录。' in error_message or 'Account is disabled.' in error_message:
-                          raise ForbiddenError("账户已被禁用。") # Specific user-friendly message
-
-                     raise DALError(f"Stored procedure error verifying email: {error_message}")
-
-                 if result_code is not None and result_code != 0:
-                      logger.warning(f"DAL: sp_VerifyMagicLink for token {token} returned non-zero result code: {result_code}. Result: {result}")
-                      raise DALError(f"Stored procedure failed with result code: {result_code}")
-
-
-                 # Stored procedure returns UserID, IsVerified on success
-                 if all(key in result for key in ['UserID', 'IsVerified']):
-                      logger.info(f"DAL: Magic link verified successfully for token {token}.")
-                      return result # Return the dictionary
-
-                 # If result is a dict but doesn't contain expected keys and no error message
-                 logger.warning(f"DAL: sp_VerifyMagicLink for token {token} returned unexpected dict format: {result}")
-                 raise DALError("Verify email failed: Unexpected response format from stored procedure.")
-
-             # If result is None or not a dict
-             logger.error(f"DAL: sp_VerifyMagicLink for token {token} returned unexpected result: {result}")
-             raise DALError("Verify email failed: Unexpected database response.")
-
-
-         except (ForbiddenError, DALError) as e:
-             raise e # Re-raise specific exceptions
-         except Exception as e:
-             logger.error(f"Error verifying email with token {token}: {e}")
-             raise DALError(f"Database error during email verification: {e}") from e
-
     async def get_system_notifications_by_user_id(self, conn: pyodbc.Connection, user_id: UUID) -> list[dict]:
         """获取某个用户的系统通知列表。"""
         logger.debug(f"DAL: Getting system notifications for user {user_id}.")
@@ -734,7 +627,7 @@ class UserDAL:
             logger.warning(f"DAL: sp_MarkNotificationAsRead for notif {notification_id}, user {user_id} returned unexpected result: {result}")
             # If not found/forbidden, an exception should have been raised by message check.
             # If update truly failed without an SP error message, return False or raise DAL error.
-            raise DALError(f"Database error while marking notification as read: Unexpected result: {result}")
+            raise DALError(f"Database error while marking notification as read: {result}")
 
         except (NotFoundError, ForbiddenError, DALError) as e:
             raise e # Re-raise specific exceptions
@@ -777,7 +670,7 @@ class UserDAL:
 
             # If result is None or not a dict
             logger.warning(f"DAL: sp_SetChatMessageVisibility for msg {message_id}, user {user_id} returned unexpected result: {result}")
-            raise DALError(f"Database error while setting message visibility: Unexpected result: {result}")
+            raise DALError(f"Database error while setting message visibility: {result}")
 
 
         except (NotFoundError, ForbiddenError, DALError) as e:
@@ -824,7 +717,7 @@ class UserDAL:
 
             # If result is None or not a dict
             logger.warning(f"DAL: sp_ChangeUserStatus for user {user_id}, admin {admin_id} returned unexpected result: {result}")
-            raise DALError(f"Database error while changing user status: Unexpected result: {result}")
+            raise DALError(f"Database error while changing user status: {result}")
 
 
         except (NotFoundError, ForbiddenError, ValueError, DALError) as e:
@@ -886,82 +779,137 @@ class UserDAL:
              raise DALError(f"Database error during user credit adjustment: {e}") from e
 
     async def get_all_users(self, conn: pyodbc.Connection, admin_id: UUID) -> list[dict]:
-        """管理员获取所有用户列表。"""
-        logger.debug(f"DAL: Admin {admin_id} getting all users.")
+        """DAL: 管理员获取所有用户列表。"""
+        logger.debug(f"DAL: Attempting to get all users by admin {admin_id}")
         sql = "{CALL sp_GetAllUsers(?)}"
         try:
-            # 调用 sp_GetAllUsers 存储过程. SP returns multiple rows (a list of dicts).
-            result = await self.execute_query_func(conn, sql, (admin_id,), fetchall=True)
-            logger.debug(f"DAL: sp_GetAllUsers for admin {admin_id} returned {len(result) if isinstance(result, list) else 'unexpected'} users.")
-
-            if result is None:
-                 logger.debug(f"DAL: sp_GetAllUsers for admin {admin_id} returned None.")
-                 return [] # No users found or unexpected empty result
-
-            if not isinstance(result, list):
-                 # Handle unexpected result format (e.g., error message returned as single dict)
-                 if isinstance(result, dict):
-                      error_message = result.get('') or result.get('Error') or result.get('Message')
-                      if error_message:
-                           logger.warning(f"DAL: sp_GetAllUsers failed for admin {admin_id}: SP returned error: {error_message}")
-                           if "只有超级管理员可以查看所有用户。" in error_message and result.get('OperationResultCode') == -2: # Check code for forbidden
-                                 raise ForbiddenError(error_message) # 将数据库权限错误转换为应用层异常
-                           if "管理员不存在" in error_message or "Admin user not found" in error_message:
-                                 raise NotFoundError(error_message) # 管理员不存在也算一种"无权限"
-
-                           # If it's an unhandled error message, raise generic DALError
-                           raise DALError(f"Stored procedure error fetching all users: {error_message}")
-
-                 logger.error(f"DAL: Unexpected result format from sp_GetAllUsers for admin {admin_id}: {result}")
-                 raise DALError("Database error while fetching all users: Unexpected data format.")
-
-            # Assuming result is a list of dictionaries
-            # Map keys if necessary (though SP columns seem mapped in Service)
-            return result # Returns a list of user dictionaries
-
-        except ForbiddenError:
-             raise # Re-raise ForbiddenError
-        except (NotFoundError, DALError) as e:
-             raise e # Re-raise specific DAL errors
+            results = await self.execute_query_func(conn, sql, (admin_id,), fetchall=True)
+            logger.debug(f"DAL: sp_GetAllUsers returned {len(results) if results else 0} users.")
+            return results
         except Exception as e:
-             logger.error(f"DAL: Generic Error getting all users for admin {admin_id}: {e}")
-             raise DALError(f"Database error fetching all users: {e}") from e
+            logger.error(f"DAL: Error getting all users: {e}")
+            raise DALError(f"Failed to get all users: {e}") from e
 
     async def update_user_staff_status(self, conn: pyodbc.Connection, user_id: UUID, new_is_staff: bool, admin_id: UUID) -> bool:
-        """
-        Update the IsStaff status of a user.
-        Intended for use by super administrators.
-
-        Args:
-            conn: Database connection.
-            user_id: The UUID of the user whose status to update.
-            new_is_staff: The new boolean value for IsStaff.
-            admin_id: The UUID of the admin performing the action (for logging/auditing).
-
-        Returns:
-            True if the update was successful (1 row affected), False otherwise.
-
-        Raises:
-            DALError: If a database error occurs.
-        """
-        logger.debug(f"DAL: Updating staff status for user {user_id} to {new_is_staff} by admin {admin_id}")
+        """DAL: 更新用户的staff状态。"""
+        logger.debug(f"DAL: Attempting to update staff status for user {user_id} to {new_is_staff} by admin {admin_id}")
+        sql = "{CALL sp_UpdateUserStaffStatus(?, ?, ?)}"
         try:
-            query = """
-                UPDATE [User]
-                SET IsStaff = ?
-                WHERE UserID = ?
-            """
-            params = (new_is_staff, user_id)
+            # sp_UpdateUserStaffStatus returns 1 for success, -1 if user not found, -2 if admin not found/not super admin
+            result = await self.execute_query_func(conn, sql, (user_id, new_is_staff, admin_id), fetchone=True)
+            logger.debug(f"DAL: sp_UpdateUserStaffStatus returned: {result}")
             
-            # Use execute_query_func which handles commit/rollback and returns rowcount
-            rowcount = await self.execute_query_func(conn, query, params) # Removed fetch=False
-            logger.debug(f"DAL: Update staff status rowcount: {rowcount}")
+            if result and isinstance(result, dict) and result.get('OperationResultCode') == 1:
+                 logger.info(f"DAL: Staff status updated successfully for user {user_id}.")
+                 return True
+            
+            # Handle sp specific error codes
+            error_code = result.get('OperationResultCode')
+            if error_code == -1:
+                raise NotFoundError(f"User with ID {user_id} not found.")
+            elif error_code == -2:
+                 raise PermissionError(f"Admin with ID {admin_id} not authorized or not found.") # Use PermissionError for authorization issues
+            else:
+                 # Log unexpected result and raise a generic error
+                 logger.error(f"DAL: Unexpected result from sp_UpdateUserStaffStatus: {result}")
+                 raise DALError(f"Failed to update staff status for user {user_id}: Unexpected result code {error_code}")
 
-            return rowcount == 1
-
-        except pyodbc.Error as e:
-            logger.error(f"DAL Error updating user staff status for {user_id}: {e}")
-            raise DALError(f"Database error updating user staff status: {e}") from e
+        except (pyodbc.ProgrammingError, pyodbc.IntegrityError) as e:
+            logger.error(f"DAL: Database error updating staff status for user {user_id}: {e}")
+            raise DALError(f"Database error updating staff status for user {user_id}: {e}") from e
         except Exception as e:
-            logger.error(f"Unexpected Error updating user staff status for {user_id}: {e}")
-            raise e 
+            logger.error(f"DAL: Unexpected error updating staff status for user {user_id}: {e}")
+            raise DALError(f"Failed to update staff status for user {user_id}: {e}") from e
+
+    async def get_user_by_email_with_password(self, conn: pyodbc.Connection, email: str) -> dict | None:
+        """DAL: 根据邮箱获取用户（包括密码哈希）。"""
+        logger.debug(f"DAL: Attempting to get user by email {email}")
+        sql = "{CALL sp_GetUserByEmailWithPassword(?)}"
+        try:
+            result = await self.execute_query_func(conn, sql, (email,), fetchone=True)
+            logger.debug(f"DAL: sp_GetUserByEmailWithPassword returned: {result}")
+            return result
+        except Exception as e:
+            logger.error(f"DAL: Error getting user by email {email}: {e}")
+            raise DALError(f"Failed to get user by email {email}: {e}") from e
+
+    async def create_otp(self, conn: pyodbc.Connection, user_id: UUID, otp_code: str, expires_at: datetime, otp_type: str) -> dict | None:
+        """DAL: 为指定用户创建并存储 OTP。"""
+        logger.debug(f"DAL: Attempting to create OTP for user {user_id} with type {otp_type}")
+        sql = "{CALL sp_CreateOtpForPasswordReset(?, ?, ?, ?)}"
+        try:
+            result = await self.execute_query_func(conn, sql, (user_id, otp_code, expires_at, otp_type), fetchone=True)
+            logger.debug(f"DAL: sp_CreateOtpForPasswordReset returned: {result}")
+
+            if result and isinstance(result, dict):
+                operation_result_code = result.get('OperationResultCode')
+                debug_message = result.get('Debug_Message')
+
+                if operation_result_code == 0:
+                    logger.info(f"DAL: OTP created successfully for user {user_id}.")
+                    return result
+                elif operation_result_code == -1:
+                    raise NotFoundError(f"User with ID {user_id} not found for OTP creation.")
+                else:
+                    raise DALError(f"Stored procedure error creating OTP: {debug_message}")
+            
+            logger.error(f"DAL: sp_CreateOtpForPasswordReset returned unexpected result: {result}")
+            raise DALError("Failed to create OTP: Unexpected database response.")
+
+        except (NotFoundError, DALError) as e:
+            raise e
+        except Exception as e:
+            logger.error(f"DAL: Error creating OTP for user {user_id}: {e}")
+            raise DALError(f"Database error creating OTP: {e}") from e
+
+    async def get_otp_details(self, conn: pyodbc.Connection, email: str, otp_code: str) -> dict | None:
+        """DAL: 根据邮箱和 OTP 获取 OTP 详情并验证有效性。"""
+        logger.debug(f"DAL: Attempting to get OTP details for email {email} with code {otp_code}")
+        sql = "{CALL sp_GetOtpDetailsAndValidate(?, ?)}"
+        try:
+            result = await self.execute_query_func(conn, sql, (email, otp_code), fetchone=True)
+            logger.debug(f"DAL: sp_GetOtpDetailsAndValidate returned: {result}")
+            
+            if result and isinstance(result, dict) and 'OperationResultCode' in result and result['OperationResultCode'] == -1:
+                # Specific error from SP indicating invalid/expired OTP
+                return None # Indicate not found/invalid OTP
+            elif result and isinstance(result, dict):
+                # Valid OTP details found
+                return result
+            else:
+                # Unexpected result from SP
+                logger.warning(f"DAL: sp_GetOtpDetailsAndValidate returned unexpected type or None: {result}")
+                return None # Treat as not found/invalid
+        except Exception as e:
+            logger.error(f"DAL: Error getting OTP details for email {email} with code {otp_code}: {e}")
+            raise DALError(f"Database error while fetching OTP details: {e}") from e
+
+    async def mark_otp_as_used(self, conn: pyodbc.Connection, otp_id: UUID) -> bool:
+        """DAL: 标记 OTP 为已使用。"""
+        logger.debug(f"DAL: Attempting to mark OTP {otp_id} as used")
+        sql = "{CALL sp_MarkOtpAsUsed(?)}"
+        try:
+            result = await self.execute_query_func(conn, sql, (otp_id,), fetchone=True)
+            logger.debug(f"DAL: sp_MarkOtpAsUsed returned: {result}")
+
+            if result and isinstance(result, dict):
+                operation_result_code = result.get('OperationResultCode')
+                debug_message = result.get('Debug_Message')
+
+                if operation_result_code == 0:
+                    logger.info(f"DAL: OTP {otp_id} successfully marked as used.")
+                    return True
+                elif operation_result_code == -1:
+                    logger.warning(f"DAL: OTP {otp_id} not found or already used when marking as used. Debug: {debug_message}")
+                    return False # Not found or already used
+                else:
+                    raise DALError(f"Stored procedure error marking OTP as used: {debug_message}")
+            
+            logger.error(f"DAL: sp_MarkOtpAsUsed returned unexpected result: {result}")
+            raise DALError("Failed to mark OTP as used: Unexpected database response.")
+
+        except DALError as e:
+            raise e
+        except Exception as e:
+            logger.error(f"DAL: Error marking OTP {otp_id} as used: {e}")
+            raise DALError(f"Database error marking OTP as used: {e}") from e 
