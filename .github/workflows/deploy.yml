@@ -74,7 +74,7 @@ jobs:
           # 目前，我们跳过这一步，假设数据库结构已就绪。
           # 重启 ASGI 应用服务器 (Gunicorn)
           echo "Restarting Gunicorn service 'gunicorn_siyuantao'..."
-          sudo systemctl restart gunicorn_siyuantao
+          sudo -n systemctl restart gunicorn_siyuantao
 
           # 检查服务状态 (可选)
           echo "Checking Gunicorn service status..."
