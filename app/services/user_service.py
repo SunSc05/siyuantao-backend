@@ -544,19 +544,19 @@ class UserService:
         # Manually construct dict for UserResponseSchema, ensuring all fields are present
         # and types are correct.
         converted_data = {
-            "user_id": dal_user_data.get('UserID'),
-            "username": dal_user_data.get('UserName'),
-            "email": dal_user_data.get('Email'),
-            "status": dal_user_data.get('Status'),
-            "credit": dal_user_data.get('Credit'),
-            "is_staff": dal_user_data.get('IsStaff') == 1, # BIT to bool
-            "is_super_admin": dal_user_data.get('IsSuperAdmin') == 1, # BIT to bool
-            "is_verified": dal_user_data.get('IsVerified') == 1, # BIT to bool
-            "major": dal_user_data.get('Major'),
-            "avatar_url": dal_user_data.get('AvatarUrl'),
-            "bio": dal_user_data.get('Bio'),
-            "phone_number": dal_user_data.get('PhoneNumber'),
-            "join_time": dal_user_data.get('JoinTime') # datetime object expected
+            "user_id": dal_user_data.get("用户ID"),
+            "username": dal_user_data.get("用户名"),
+            "email": dal_user_data.get("邮箱"),
+            "status": dal_user_data.get("账户状态"),
+            "credit": dal_user_data.get("信用分"),
+            "is_staff": dal_user_data.get("是否管理员", False),
+            "is_super_admin": dal_user_data.get("是否超级管理员", False),
+            "is_verified": dal_user_data.get("是否已认证", False),
+            "major": dal_user_data.get("专业"),
+            "avatar_url": dal_user_data.get("头像URL"),
+            "bio": dal_user_data.get("个人简介"),
+            "phone_number": dal_user_data.get("手机号码"),
+            "join_time": dal_user_data.get("注册时间")
         }
 
         # Validate with Pydantic schema to ensure correctness
