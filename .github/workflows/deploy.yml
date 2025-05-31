@@ -61,7 +61,7 @@ jobs:
           # 激活 Conda 虚拟环境
           echo "Activating virtual environment 'backend-py312'..."
           # 显式 source Conda 初始化脚本，确保 conda 命令可用
-          source /home/${{ secrets.SSH_USER }}/miniconda3/etc/profile.d/conda.sh || { echo "Conda initialization failed or conda.sh not found. Please ensure Conda is installed and initialized for ${{ secrets.SSH_USER }} user on the server."; exit 1; }
+          source /home/xk/miniconda3/etc/profile.d/conda.sh || { echo "Conda initialization failed or conda.sh not found. Please ensure Conda is installed and initialized for xk user on the server."; exit 1; }
           conda activate backend-py312 || { echo "Conda environment 'backend-py312' activation failed. Please ensure the environment exists and is named correctly."; exit 1; }
 
           # 安装/更新 Python 依赖
