@@ -149,7 +149,7 @@ class ProductService:
         # 激活商品
         await self.product_dal.activate_product(conn, product_id, admin_id)
 
-    async def reject_product(self, conn: pyodbc.Connection, product_id: int, admin_id: int) -> None:
+    async def reject_product(self, conn: pyodbc.Connection, product_id: int, admin_id: int, reason: Optional[str] = None) -> None:
         """
         管理员拒绝商品
         
@@ -157,17 +157,20 @@ class ProductService:
             conn: 数据库连接对象
             product_id: 商品ID
             admin_id: 管理员ID
+            reason: 拒绝原因
         
         Raises:
             PermissionError: 非管理员尝试操作时抛出
             DatabaseError: 数据库操作失败时抛出
         """
         # 管理员权限检查
+        # In the DAL, we should trust that the admin_id passed from service is valid
+        # as the router already performed the check. However, for robustness, we can keep this check.
         if not await self.check_admin_permission(conn, admin_id):
             raise PermissionError("You are not an admin.")
         
         # 拒绝商品
-        await self.product_dal.reject_product(conn, product_id, admin_id)
+        await self.product_dal.reject_product(conn, product_id, admin_id, reason) # Pass reason to DAL
 
     async def withdraw_product(self, conn: pyodbc.Connection, product_id: int, owner_id: int) -> None:
         """
@@ -330,9 +333,18 @@ class ProductService:
         """
         # 这里需要实现具体的管理员权限检查逻辑
         # 示例中假设用户ID为1的是管理员
+        # In a real application, you would query the database to check if the user has admin role/permissions.
+        # For this mock/test environment, we'll assume a specific admin ID or role status.
+        # Assuming admin_id is a UUID or something that can be directly used
+        # For now, let's keep it simple. If admin_id needs to be a UUID in DAL, it should be converted.
+        # Based on previous discussions and tests, `admin_id` here is an int from the `get_current_active_admin_user` dependency.
+        # The `User` table has `UserID` as `int` and `IsStaff` as `bit`.
+        # We should query the `User` table to check `IsStaff` status.
         query = "SELECT IsStaff FROM [User] WHERE UserID = ?"
-        values = (str(admin_id),)
-        result = await self._execute_query(conn, query, values, fetchone=True)
+        # Convert admin_id to str for UUID comparison if UserID is UUID, otherwise use as is for int.
+        # From product_routes.py, owner_id is converted to int. So admin_id should be int here too.
+        values = (admin_id,)
+        result = await self._execute_query(conn, query, values, fetchone=True) # Assuming _execute_query is available here
         is_staff = result.get('IsStaff') if result and isinstance(result, dict) else False
         return bool(is_staff)
 
@@ -353,7 +365,7 @@ class ProductService:
         success_count = await self.product_dal.batch_activate_products(conn, product_ids, admin_id)
         return success_count
 
-    async def batch_reject_products(self, conn: pyodbc.Connection, product_ids: List[int], admin_id: int) -> int:
+    async def batch_reject_products(self, conn: pyodbc.Connection, product_ids: List[int], admin_id: int, reason: Optional[str] = None) -> int:
         """
         批量拒绝商品
         
@@ -361,11 +373,12 @@ class ProductService:
             conn: 数据库连接对象
             product_ids: 商品ID列表
             admin_id: 管理员ID
+            reason: 拒绝原因
         Returns:
             成功拒绝的商品数量
         """
         if not await self.check_admin_permission(conn, admin_id):
             raise PermissionError("You are not an admin.")
         
-        success_count = await self.product_dal.batch_reject_products(conn, product_ids, admin_id)
+        success_count = await self.product_dal.batch_reject_products(conn, product_ids, admin_id, reason) # Pass reason to DAL
         return success_count

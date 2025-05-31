@@ -6,7 +6,8 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.encoders import jsonable_encoder
 from app.exceptions import (
     NotFoundError, IntegrityError, DALError,
-    not_found_exception_handler, integrity_exception_handler, dal_exception_handler
+    not_found_exception_handler, integrity_exception_handler, dal_exception_handler,
+    forbidden_exception_handler
 )
 
 # Import standard logging and dictConfig
@@ -127,6 +128,7 @@ app.add_middleware(
 app.add_exception_handler(NotFoundError, not_found_exception_handler)
 app.add_exception_handler(IntegrityError, integrity_exception_handler)
 app.add_exception_handler(DALError, dal_exception_handler)
+app.add_exception_handler(PermissionError, forbidden_exception_handler)
 # 对于未捕获的 HTTPException (例如 Pydantic 验证失败)
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request, exc: HTTPException):
@@ -151,7 +153,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 
 # 注册路由模块
 app.include_router(users.router, prefix="/api/v1")
-app.include_router(product_routes.router, prefix="/api/v1/products", tags=["Products"])  # 注册商品路由
+app.include_router(product_routes.router, prefix="/api/v1/products", tags=["Products"])
 # app.include_router(products.router, prefix="/api/v1/products", tags=["Products"]) # 暂时注释掉未创建的路由
 # app.include_router(orders.router, prefix="/api/v1/orders", tags=["Orders"]) # 暂时注释掉未创建的路由
 app.include_router(auth.router, prefix="/api/v1")

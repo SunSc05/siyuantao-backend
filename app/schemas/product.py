@@ -1,6 +1,7 @@
 from pydantic import BaseModel, Field
 from typing import List, Optional
 from datetime import datetime
+from uuid import UUID
 
 class ProductImage(BaseModel):
     image_url: str
@@ -16,7 +17,6 @@ class ProductBase(BaseModel):
     status: str = "PendingReview"
 
 class ProductCreate(ProductBase):
-    owner_id: str
     image_urls: List[str] = Field(default_factory=list)
 
 class ProductUpdate(BaseModel):

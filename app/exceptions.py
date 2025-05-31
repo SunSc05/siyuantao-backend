@@ -71,6 +71,12 @@ async def dal_exception_handler(request: Request, exc: DALError):
         content={"message": f"An unexpected database error occurred: {exc.message}"}
     )
 
+async def forbidden_exception_handler(request: Request, exc: PermissionError):
+    return JSONResponse(
+        status_code=status.HTTP_403_FORBIDDEN,
+        content={"message": exc.message}
+    )
+
 # 映射 SQLSTATE 错误码到自定义异常 (在 dal/base.py 中使用)
 SQLSTATE_ERROR_MAP = {
     '23000': IntegrityError, # Integrity Constraint Violation (通用)
