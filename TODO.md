@@ -158,7 +158,7 @@
 *   文件: `backend/sql/06_create_tables.sql`
     *   `[√] DONE:` `CREATE TABLE [SystemNotification]`: 系统通知表，包含 `NotificationID`, `UserID`, `Title`, `Content`, `CreateTime`, `IsRead`。
         *   **细节:** 确保 `UserID` 外键关联。
-    *   `[ ] TODO:` `CREATE TABLE [Report]`: 举报表，包含 `ReportID`, `ReporterUserID`, `ReportedUserID`, `ReportedProductID`, `ReportedOrderID`, `ReportContent`, `ReportTime`, `ProcessingStatus`, `ProcessorAdminID`, `ProcessingTime`, `ProcessingResult`。
+    *   `[√] DONE:` `CREATE TABLE [Report]`: 举报表，包含 `ReportID`, `ReporterUserID`, `ReportedUserID`, `ReportedProductID`, `ReportedOrderID`, `ReportContent`, `ReportTime`, `ProcessingStatus`, `ProcessorAdminID`, `ProcessingTime`, `ProcessingResult`。
         *   **细节:** 确保所有外键关联，`ProcessingStatus` 枚举值符合定义。
 *   文件: `backend/sql/06_notification_procedures.sql`
     *   `[ ] TODO:` `sp_SendSystemNotification (@userId, @title, @content)`: 发送系统通知给指定用户。
