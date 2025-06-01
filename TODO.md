@@ -156,7 +156,7 @@
 ### 1.6 通知与举报模块
 
 *   文件: `backend/sql/06_create_tables.sql`
-    *   `[ ] TODO:` `CREATE TABLE [SystemNotification]`: 系统通知表，包含 `NotificationID`, `UserID`, `Title`, `Content`, `CreateTime`, `IsRead`。
+    *   `[√] DONE:` `CREATE TABLE [SystemNotification]`: 系统通知表，包含 `NotificationID`, `UserID`, `Title`, `Content`, `CreateTime`, `IsRead`。
         *   **细节:** 确保 `UserID` 外键关联。
     *   `[ ] TODO:` `CREATE TABLE [Report]`: 举报表，包含 `ReportID`, `ReporterUserID`, `ReportedUserID`, `ReportedProductID`, `ReportedOrderID`, `ReportContent`, `ReportTime`, `ProcessingStatus`, `ProcessorAdminID`, `ProcessingTime`, `ProcessingResult`。
         *   **细节:** 确保所有外键关联，`ProcessingStatus` 枚举值符合定义。
@@ -276,7 +276,7 @@
 ### 2.6 通知与举报模块
 
 *   文件: `backend/src/modules/notification/dal/system_notification_dal.py`
-    *   `[√] DONE:` `SystemNotificationDAL` 类定义，注入数据库连接池。
+    *   `[ ] TODO:` `SystemNotificationDAL` 类定义，注入数据库连接池。
     *   `[ ] TODO:` `send_system_notification(...)`: 封装 `sp_SendSystemNotification`。
     *   `[ ] TODO:` `get_user_notifications(...)`: 封装 `sp_GetUserNotifications`。
     *   `[ ] TODO:` `mark_notification_as_read(...)`: 封装 `sp_MarkNotificationAsRead`。
