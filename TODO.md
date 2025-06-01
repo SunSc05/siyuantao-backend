@@ -276,7 +276,7 @@
 ### 2.6 通知与举报模块
 
 *   文件: `backend/src/modules/notification/dal/system_notification_dal.py`
-    *   `[ ] TODO:` `SystemNotificationDAL` 类定义，注入数据库连接池。
+    *   `[√] DONE:` `SystemNotificationDAL` 类定义，注入数据库连接池。
     *   `[ ] TODO:` `send_system_notification(...)`: 封装 `sp_SendSystemNotification`。
     *   `[ ] TODO:` `get_user_notifications(...)`: 封装 `sp_GetUserNotifications`。
     *   `[ ] TODO:` `mark_notification_as_read(...)`: 封装 `sp_MarkNotificationAsRead`。
