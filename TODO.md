@@ -161,16 +161,16 @@
     *   `[√] DONE:` `CREATE TABLE [Report]`: 举报表，包含 `ReportID`, `ReporterUserID`, `ReportedUserID`, `ReportedProductID`, `ReportedOrderID`, `ReportContent`, `ReportTime`, `ProcessingStatus`, `ProcessorAdminID`, `ProcessingTime`, `ProcessingResult`。
         *   **细节:** 确保所有外键关联，`ProcessingStatus` 枚举值符合定义。
 *   文件: `backend/sql/06_notification_procedures.sql`
-    *   `[ ] TODO:` `sp_SendSystemNotification (@userId, @title, @content)`: 发送系统通知给指定用户。
-    *   `[ ] TODO:` `sp_GetUserNotifications (@userId, @isRead, @pageNumber, @pageSize)`: 获取用户通知列表，支持已读/未读筛选和分页。
-    *   `[ ] TODO:` `sp_MarkNotificationAsRead (@notificationId, @userId)`: 标记通知为已读。
-    *   `[ ] TODO:` `sp_DeleteNotification (@notificationId, @userId)`: 用户删除通知（逻辑删除）。
+    *   `[√] DONE:` `sp_SendSystemNotification (@userId, @title, @content)`: 发送系统通知给指定用户。
+    *   `[√] DONE:` `sp_GetUserNotifications (@userId, @isRead, @pageNumber, @pageSize)`: 获取用户通知列表，支持已读/未读筛选和分页。
+    *   `[√] DONE:` `sp_MarkNotificationAsRead (@notificationId, @userId)`: 标记通知为已读。
+    *   `[√] DONE:` `sp_DeleteNotification (@notificationId, @userId)`: 用户删除通知（逻辑删除）。
 *   文件: `backend/sql/06_report_procedures.sql`
-    *   `[ ] TODO:` `sp_CreateReport (@reporterUserId, @reportedUserId, @reportedProductId, @reportedOrderId, @reportContent)`: 用户提交举报。
-    *   `[ ] TODO:` `sp_GetReportList (@status, @pageNumber, @pageSize)`: 管理员获取举报列表，支持状态筛选和分页。
-    *   `[ ] TODO:` `sp_HandleReport (@reportId, @adminId, @newStatus, @processingResult)`: 管理员处理举报。
+    *   `[√] DONE:` `sp_CreateReport (@reporterUserId, @reportedUserId, @reportedProductId, @reportedOrderId, @reportContent)`: 用户提交举报。
+    *   `[√] DONE:` `sp_GetReportList (@status, @pageNumber, @pageSize)`: 管理员获取举报列表，支持状态筛选和分页。
+    *   `[√] DONE:` `sp_HandleReport (@reportId, @adminId, @newStatus, @processingResult)`: 管理员处理举报。
 *   文件: `backend/sql/drop_all.sql`
-    *   `[ ] TODO:` 添加所有通知与举报模块相关对象的删除语句。
+    *   `[√] DONE:` 添加所有通知与举报模块相关对象的删除语句。
 
 ---
 
