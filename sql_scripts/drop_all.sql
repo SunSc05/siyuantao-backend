@@ -69,7 +69,8 @@ PRINT N'Dropping all tables (custom first, then Django-managed)...';
 -- Drop custom application specific tables (order matters due to FKs)
 PRINT N'Dropping custom application tables...';
 -- Order reversed based on FK dependencies to ensure tables are dropped before those they reference.
-DROP TABLE IF EXISTS [Report]; -- FK to User, Product, Order
+DROP TABLE IF EXISTS [Report]; -- 举报表（通知与举报模块）
+DROP TABLE IF EXISTS [SystemNotification]; -- 系统通知表（通知与举报模块）
 DROP TABLE IF EXISTS [ReturnRequest]; -- FK to Order
 DROP TABLE IF EXISTS [Evaluation]; -- FK to Order, User
 DROP TABLE IF EXISTS [ChatMessage]; -- FK to User, Product - Note: ChatMessage FK to Transaction is in the original, updated FK is to Product.
@@ -113,4 +114,4 @@ DROP TABLE IF EXISTS [django_session];
 GO
 
 PRINT N'All specified database objects dropped (if they existed).';
-GO 
+GO
