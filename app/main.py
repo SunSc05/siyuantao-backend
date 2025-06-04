@@ -26,6 +26,7 @@ except ImportError:
 
 # Import all module routes
 from app.routers import users, auth, order, evaluation, product_routes, upload_routes
+from app.routers.notification_routes import router  # 新增导入
 # from app.core.db import initialize_db_pool, close_db_pool # Commented out connection pool functions
 
 # Define a comprehensive logging configuration dictionary
@@ -158,6 +159,8 @@ app.include_router(product_routes.router, prefix="/api/v1/products", tags=["Prod
 app.include_router(order.router, prefix="/api/v1/orders", tags=["Orders"])
 app.include_router(evaluation.router, prefix="/api/v1/evaluations", tags=["Evaluations"])
 app.include_router(auth.router, prefix="/api/v1")
+# 确保添加以下行
+app.include_router(router, prefix="/api/v1/notifications", tags=["Notifications"])
 # Mount the uploads directory to serve static files
 app.mount("/uploads", StaticFiles(directory=os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'uploads'))), name="uploads")
 # ... 注册其他模块路由

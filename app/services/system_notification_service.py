@@ -1,6 +1,6 @@
 import pyodbc
 from uuid import UUID
-from typing import Optional, Callable, Awaitable, List, Dict
+from typing import Optional, Callable, Awaitable, List, Dict, Any  # 添加 Any 导入
 import logging
 from app.dal.system_notification_dal import SystemNotificationDAL
 from app.exceptions import NotFoundError, DALError, ForbiddenError

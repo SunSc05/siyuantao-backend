@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     DATABASE_NAME: str
     DATABASE_UID: str
     DATABASE_PWD: str
-    ODBC_DRIVER: str = Field("ODBC Driver 17 for SQL Server", description="ODBC Driver for SQL Server") # New: ODBC Driver
+    ODBC_DRIVER: str = Field("ODBC Driver 17 for SQL Server", description="ODBC Driver for SQL Server")
 
     # Database Connection Pool Settings
     DATABASE_POOL_MIN: int = Field(5, description="最小连接数")
@@ -22,31 +22,27 @@ class Settings(BaseSettings):
     DATABASE_POOL_BLOCKING: bool = Field(True, description="连接池满时是否阻塞等待")
 
     # Parameters for pyodbc.connect to be passed directly
-    # This allows flexibility for various connection string options
-    PYODBC_PARAMS: dict = Field(default_factory=lambda: {},
-        description="Additional parameters for pyodbc.connect as a dictionary")
+    PYODBC_PARAMS: dict = Field(default_factory=lambda: {}, description="Additional parameters for pyodbc.connect as a dictionary")
 
-    # Add JWT settings
-    SECRET_KEY: str
+    # JWT settings
+    SECRET_KEY: str = Field("mock_secret_key", description="密钥")
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
 
     # Email Service Provider Selection
-    # Use "smtp" or "aliyun"
-    EMAIL_PROVIDER: str = Field(..., description="邮件服务提供商: smtp 或 aliyun") # Make this required
+    EMAIL_PROVIDER: str = "smtp"  # 提供有效的值
+    SENDER_EMAIL: EmailStr = Field("test@example.com", description="发件人邮箱")  # 添加默认值
 
     # SMTP Settings (Optional if Aliyun is used)
-    SMTP_SERVER: Optional[str] = Field(None, description="SMTP 服务器地址") # Make optional
-    SMTP_PORT: Optional[int] = Field(None, description="SMTP 服务器端口") # Make optional
-    SMTP_USERNAME: Optional[str] = Field(None, description="SMTP 用户名") # Make optional
-    SMTP_PASSWORD: Optional[str] = Field(None, description="SMTP 密码") # Make optional
+    SMTP_SERVER: Optional[str] = Field("mock_smtp_server", description="SMTP 服务器地址") # 添加默认值
+    SMTP_PORT: Optional[int] = Field(587, description="SMTP 服务器端口") # 添加默认值
+    SMTP_USERNAME: Optional[str] = Field("mock_smtp_username", description="SMTP 用户名") # 添加默认值
+    SMTP_PASSWORD: Optional[str] = Field("mock_smtp_password", description="SMTP 密码") # 添加默认值
 
     # Aliyun Direct Mail Settings (Optional if SMTP is used)
     ALIYUN_EMAIL_ACCESS_KEY_ID: Optional[str] = Field(None, description="阿里云邮件服务 Access Key ID") # Uncomment and make optional
     ALIYUN_EMAIL_ACCESS_KEY_SECRET: Optional[str] = Field(None, description="阿里云邮件服务 Access Key Secret") # Uncomment and make optional
     ALIYUN_EMAIL_REGION: str = Field("cn-hangzhou", description="阿里云邮件服务区域") # Uncomment
-
-    SENDER_EMAIL: EmailStr = Field(..., description="发件人邮箱地址") # Keep required
 
     # Frontend Domain for Magic Link
     FRONTEND_DOMAIN: HttpUrl = Field("http://localhost:3301", description="前端域名") # Keep required
@@ -93,4 +89,4 @@ class Settings(BaseSettings):
 # logger.info(f"Current working directory before loading settings: {os.getcwd()}") # Add this line
 settings = Settings()
 
-# Removed: get_connection_string function will be replaced by connection pool logic 
+# Removed: get_connection_string function will be replaced by connection pool logic

@@ -5,6 +5,7 @@ from app.services.system_notification_service import SystemNotificationService
 from app.dependencies import get_current_user, get_current_active_admin_user
 from app.dal.connection import get_db_connection
 import pyodbc
+from app.schemas.notification_schemas import NotificationSchema, NotificationListResponse, NotificationActionResponse
 
 # 定义 APIRouter
 router = APIRouter(
@@ -12,7 +13,7 @@ router = APIRouter(
     tags=["Notifications"]
 )
 
-@router.get("/me", response_model=List[Dict[str, Any]])
+@router.get("/me", response_model=NotificationListResponse)
 async def get_user_notifications(
     conn: pyodbc.Connection = Depends(get_db_connection),
     user_service: SystemNotificationService = Depends(SystemNotificationService),
@@ -24,11 +25,13 @@ async def get_user_notifications(
     user_id = current_user['user_id']
     try:
         notifications = await user_service.get_user_notifications(conn, user_id)
-        return notifications
+        # 假设 notifications 包含总记录数
+        total_count = len(notifications) if notifications else 0
+        return {"notifications": notifications, "total_count": total_count}
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
-@router.put("/{notification_id}/read", status_code=status.HTTP_204_NO_CONTENT)
+@router.put("/{notification_id}/read", status_code=status.HTTP_204_NO_CONTENT, response_model=None)
 async def mark_notification_as_read(
     notification_id: UUID,
     conn: pyodbc.Connection = Depends(get_db_connection),
@@ -40,12 +43,14 @@ async def mark_notification_as_read(
     """
     user_id = current_user['user_id']
     try:
-        await user_service.mark_notification_as_read(conn, notification_id, user_id)
+        result = await user_service.mark_notification_as_read(conn, notification_id, user_id)
+        if not result:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="标记已读失败")
         return {}
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
-@router.delete("/{notification_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{notification_id}", status_code=status.HTTP_204_NO_CONTENT, response_model=None)
 async def delete_notification(
     notification_id: UUID,
     conn: pyodbc.Connection = Depends(get_db_connection),
@@ -57,12 +62,14 @@ async def delete_notification(
     """
     user_id = current_user['user_id']
     try:
-        await user_service.delete_notification(conn, notification_id, user_id)
+        result = await user_service.delete_notification(conn, notification_id, user_id)
+        if not result:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="删除通知失败")
         return {}
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
-@router.post("/send", status_code=status.HTTP_201_CREATED)
+@router.post("/send", status_code=status.HTTP_201_CREATED, response_model=NotificationActionResponse)
 async def send_notification(
     user_id: UUID,
     title: str,
@@ -76,6 +83,6 @@ async def send_notification(
     """
     try:
         result = await user_service.send_notification(conn, user_id, title, content)
-        return result
+        return {"success": True, "message": result.get("Result", "系统通知发送成功")}
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))

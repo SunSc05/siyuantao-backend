@@ -1,4 +1,8 @@
 import pytest
+import pyodbc  # 导入 pyodbc
+from app.config import settings
+
+original_settings = settings.copy()
 from fastapi.testclient import TestClient
 from uuid import UUID, uuid4
 from unittest.mock import AsyncMock, MagicMock

@@ -27,11 +27,18 @@ TEST_BUYER_ID = UUID("c0eebc99-9c0b-4ef8-bb6d-6bb9bd380a13") # 示例买家ID
 TEST_ADMIN_USER_ID = UUID("d0eebc99-9c0b-4ef8-bb6d-6bb9bd380a14") # 示例管理员ID
 
 # --- Global Mock for Settings Class (autouse) ---
-@pytest.fixture(autouse=True, scope="function") # Changed scope to function
+import pytest
+from unittest.mock import MagicMock
+import app.config  # 确保正确导入 app.config 模块
+
+@pytest.fixture(autouse=True, scope="function")
 def mock_global_settings_class(mocker):
     """Globally mocks the Settings class to prevent ValidationError on import."""
-    # Patch the Settings class directly to return a MagicMock instance when instantiated
-    mock_settings_instance = MagicMock(spec=Settings)
+    print("Applying mock to Settings class...")
+    # 保存原始的 Settings 类
+    original_settings = app.config.Settings
+
+    mock_settings_instance = MagicMock(spec=app.config.Settings)
 
     # Configure the mock settings instance with default values
     mock_settings_instance.DATABASE_SERVER = "mock_server"
@@ -51,10 +58,15 @@ def mock_global_settings_class(mocker):
     mock_settings_instance.ALIYUN_EMAIL_REGION = "cn-hangzhou"
 
     # When app.config.Settings() is called, it will return this mock instance
-    mocker.patch('app.config.Settings', return_value=mock_settings_instance)
+    mocker.patch.object(app.config, 'Settings', return_value=mock_settings_instance)
+    print("Settings class has been mocked.")
 
-    # Yield the mock instance for other fixtures/tests to use if needed (though autouse means it's always active)
-    yield mock_settings_instance
+    try:
+        yield mock_settings_instance
+    finally:
+        # 恢复原始的 Settings 类，以防后续有问题
+        app.config.Settings = original_settings
+        print("Settings class mock has been removed.")
 
 # Mock the OrderService dependency (moving from tests/order/test_orders_api.py)
 @pytest.fixture

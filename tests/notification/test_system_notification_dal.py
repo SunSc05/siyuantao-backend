@@ -6,6 +6,8 @@ from app.dal.system_notification_dal import SystemNotificationDAL
 from app.dal.base import execute_query  # 用于类型提示
 from app.exceptions import NotFoundError, ForbiddenError, DALError
 from datetime import datetime, timezone
+import pyodbc  # 导入 pyodbc
+from app.config import settings as original_settings  # 假设 original_settings 来自 app.config
 
 # 定义测试用的固定UUID
 TEST_USER_ID = UUID("a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11")
@@ -100,7 +102,11 @@ async def test_get_user_notifications_user_not_found(
     mock_db_connection: MagicMock
 ):
     """测试获取通知时用户不存在"""
-    mock_execute_query.return_value = [{"用户不存在"}]  # 模拟存储过程返回的错误标识
+    # 修改模拟返回的数据格式为列表中的字典
+    mock_execute_query.return_value = [{"Result": "用户不存在"}]  
+
+    with pytest.raises(NotFoundError, match="用户不存在"):
+        await system_notification_dal.get_user_notifications(mock_db_connection, UUID('c0eebc99-9c0b-4ef8-bb6d-6bb9bd380a13'))
     
     with pytest.raises(NotFoundError, match="用户不存在"):
         await system_notification_dal.get_user_notifications(
